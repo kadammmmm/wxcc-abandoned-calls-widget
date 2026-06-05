@@ -723,7 +723,7 @@ class CallbackWidget extends LitElement {
           const agentDetails = await Desktop.agentContact.SERVICE.webex.fetchPersonData("me");
           this.agentId = agentDetails?.id || agentDetails?.emails?.[0] || null;
         } catch (err) {
-          console.warn('[CallbackWidget] fetchPersonData failed:', err);
+          this._log('fetchPersonData failed', { error: err.message }, 'warn');
         }
       }
 
@@ -745,7 +745,7 @@ class CallbackWidget extends LitElement {
             this.outdialAni = Desktop.dialer.defaultAni;
           }
         } catch (err) {
-          console.warn('[CallbackWidget] Could not get outdialAni:', err);
+          this._log('Could not get outdialAni', { error: err.message }, 'warn');
         }
       }
 
@@ -753,7 +753,7 @@ class CallbackWidget extends LitElement {
         try {
           this._sdkLogger = Desktop.logger.createLogger('mk-callback-widget');
         } catch (e) {
-          console.warn('[CallbackWidget] Logger creation failed:', e);
+          console.warn('[CallbackWidget] Logger creation failed — falling back to console:', e);
         }
       }
 
@@ -770,7 +770,7 @@ class CallbackWidget extends LitElement {
       await this._fetchCallbacks();
 
     } catch (err) {
-      console.error('[CallbackWidget] SDK init failed:', err);
+      this._log('SDK init failed', { error: err.message }, 'error');
       this.error = 'Failed to initialize SDK: ' + err.message;
       await this._fetchCallbacks();
     }
@@ -901,7 +901,11 @@ class CallbackWidget extends LitElement {
 
       const abandonedTasks = abandonedData?.data?.taskDetails?.tasks || [];
       const outboundTasks = outboundData?.data?.taskDetails?.tasks || [];
-      this.truncated = !!abandonedData?.data?.taskDetails?.pageInfo?.hasNextPage;
+      const abandonedTruncated = !!abandonedData?.data?.taskDetails?.pageInfo?.hasNextPage;
+      const outboundTruncated = !!outboundData?.data?.taskDetails?.pageInfo?.hasNextPage;
+      this.truncated = abandonedTruncated || outboundTruncated;
+      this._truncatedAbandon = abandonedTruncated;
+      this._truncatedOutbound = outboundTruncated;
 
       this._log('Search API polled', { abandoned: abandonedTasks.length, outbound: outboundTasks.length, truncated: this.truncated });
 
@@ -918,10 +922,10 @@ class CallbackWidget extends LitElement {
       const prev = this.callbacks;
 
       this.callbacks = abandonedTasks.map(task => {
+        const ts = task.createdTime || Date.now();
         const key = this._normalizeAni(task.origin);
-        const abandonEndTime = task.createdTime || 0;
         const outEntries = outboundByAni.get(key) || [];
-        const matchedEntry = outEntries.find(e => e.time > abandonEndTime);
+        const matchedEntry = outEntries.find(e => e.time > ts);
         const apiCallbackMade = !!matchedEntry;
         const prevRecord = prev.find(c => c.id === task.id);
         const callbackMade = apiCallbackMade || (prevRecord?.callbackMade ?? false);
@@ -931,7 +935,7 @@ class CallbackWidget extends LitElement {
           id: task.id,
           ani: task.origin,
           queue: task.lastQueue?.name || task.lastQueue?.id || 'Unknown Queue',
-          abandonedAt: new Date(task.createdTime).toISOString(),
+          abandonedAt: new Date(ts).toISOString(),
           callbackMade,
           calledBackBy,
           status: callbackMade ? 'called-back' : 'pending'
@@ -946,9 +950,11 @@ class CallbackWidget extends LitElement {
       this._log('Search API error', { error: err.message }, 'error');
       this.error = `Search API error: ${err.message}`;
       this._consecutiveErrors++;
-      // Back off: 30s, 60s, 90s… capped at 5 minutes
-      const backoffMs = Math.min(this._consecutiveErrors * 30000, 300000);
-      this._nextPollAt = Date.now() + backoffMs;
+      // Back off: 30s, 60s, 90s… capped at 5 minutes, plus up to 50% random jitter
+      // so agents that fail simultaneously don't all retry at the same instant
+      const base = Math.min(this._consecutiveErrors * 30000, 300000);
+      const jitter = Math.floor(Math.random() * base * 0.5);
+      this._nextPollAt = Date.now() + base + jitter;
     } finally {
       this.loading = false;
       this.requestUpdate();
@@ -1064,7 +1070,7 @@ class CallbackWidget extends LitElement {
           });
         }
       } catch (e) {
-        console.warn('[CallbackWidget] Could not extract ANIs from MobX proxy:', e);
+        this._log('Could not extract ANIs from MobX proxy', { error: e.message }, 'warn');
       }
     }
 
@@ -1115,7 +1121,7 @@ class CallbackWidget extends LitElement {
           }
         });
       } else if (Desktop.dialer?.dial) {
-        console.warn('[CallbackWidget] startOutdial unavailable, falling back to dial');
+        this._log('startOutdial unavailable, falling back to dial', {}, 'warn');
         await Desktop.dialer.dial(callback.ani);
       } else {
         throw new Error('No outdial method available. Please dial manually: ' + callback.ani);
@@ -1130,7 +1136,6 @@ class CallbackWidget extends LitElement {
       this.selectedAni = null;
 
     } catch (err) {
-      console.error('[CallbackWidget] Dial error:', err);
       const errorMsg = err.details?.msg?.errorMessage || err.message || String(err);
       this._log('Dial failed', { error: errorMsg }, 'error');
       this.error = 'Dial failed: ' + errorMsg;
@@ -1145,7 +1150,9 @@ class CallbackWidget extends LitElement {
     try {
       // From Desktop config
       if (Desktop.config?.datacenter) {
-        return Desktop.config.datacenter.replace('prod', '');
+        const dc = Desktop.config.datacenter.replace('prod', '').trim();
+        if (dc) return dc;
+        // fall through to hostname check if replace yields empty string
       }
       // From window location
       const hostname = window.location.hostname;
@@ -1157,7 +1164,7 @@ class CallbackWidget extends LitElement {
       if (hostname.includes('wxcc-jp1')) return 'jp1';
       if (hostname.includes('wxcc-sg1')) return 'sg1';
     } catch (e) {
-      console.warn('[CallbackWidget] Could not determine datacenter:', e);
+      this._log('Could not determine datacenter', { error: e.message }, 'warn');
     }
     return 'us1'; // Default
   }
@@ -1282,6 +1289,7 @@ class CallbackWidget extends LitElement {
             </span>
             <button
               class="toggle-called-back-btn ${this.showCalledBack ? 'active' : ''}"
+              aria-label="${this.showCalledBack ? 'Hide handled calls' : 'Show handled calls'}"
               @click=${this._toggleShowCalledBack}
             >${this.showCalledBack ? 'Hide' : 'Show'}</button>
           ` : ''}
@@ -1295,7 +1303,7 @@ class CallbackWidget extends LitElement {
               <line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
             ${this.error}
-            <button class="error-dismiss" @click=${this._dismissError}>
+            <button class="error-dismiss" aria-label="Dismiss error" @click=${this._dismissError}>
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="18" y1="6" x2="6" y2="18"/>
                 <line x1="6" y1="6" x2="18" y2="18"/>
@@ -1311,7 +1319,10 @@ class CallbackWidget extends LitElement {
               <line x1="12" y1="9" x2="12" y2="13"/>
               <line x1="12" y1="17" x2="12.01" y2="17"/>
             </svg>
-            Showing first ${this.maxResults || 100} records — reduce <strong>lookbackMinutes</strong> or increase <strong>maxResults</strong> to see all.
+            ${this._truncatedOutbound && !this._truncatedAbandon
+              ? html`Outbound records truncated — <strong>Called Back</strong> detection may be incomplete. Reduce <strong>lookbackMinutes</strong> or increase <strong>maxResults</strong>.`
+              : html`Showing first ${this.maxResults || 100} abandoned records — reduce <strong>lookbackMinutes</strong> or increase <strong>maxResults</strong> to see all.`
+            }
           </div>
         ` : ''}
 
@@ -1326,6 +1337,7 @@ class CallbackWidget extends LitElement {
                 type="text"
                 class="search-input"
                 placeholder="Search by phone or queue..."
+                aria-label="Search by phone number or queue name"
                 .value=${this.searchQuery}
                 @input=${this._handleSearch}
               />
@@ -1359,6 +1371,7 @@ class CallbackWidget extends LitElement {
             <div class="empty-text">All abandoned calls have been handled.</div>
             <button
               style="margin-top:12px; font-size:12px; padding:6px 14px; border-radius:8px; border:1px solid var(--border-color); background:transparent; color:var(--text-muted); cursor:pointer;"
+              aria-label="Show handled calls"
               @click=${this._toggleShowCalledBack}
             >Show handled calls</button>
           </div>
@@ -1397,7 +1410,7 @@ class CallbackWidget extends LitElement {
     
     return html`
       <div class="modal-overlay" @click=${this._cancelAniSelection}>
-        <div class="modal-content" @click=${(e) => e.stopPropagation()}>
+        <div class="modal-content" role="dialog" aria-modal="true" aria-label="Select Outbound Caller ID" @click=${(e) => e.stopPropagation()}>
           <div class="modal-header">
             <h3>Select Outbound Caller ID</h3>
             <button class="modal-close" @click=${this._cancelAniSelection}>
@@ -1488,6 +1501,7 @@ class CallbackWidget extends LitElement {
           ` : html`
             <button
               class="action-btn success"
+              aria-label="Dial ${this._formatANI(callback.ani)}"
               @click=${() => this._dialCallback(callback)}
               ?disabled=${isDialing}
             >
