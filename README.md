@@ -1,644 +1,197 @@
-# CallBack Queue for Webex Contact Center
+# Abandoned Calls Widget for Webex Contact Center
 
-A custom Agent Desktop widget that surfaces abandoned calls for proactive agent follow-up. When customers disconnect during IVR or while waiting in queue, this solution captures the interaction data and presents it to agents for callback.
+A widget for the WxCC Agent Desktop that surfaces abandoned calls and lets agents dial customers back in one click. **No backend server required** — the widget polls the WxCC Search API directly using the agent's existing session token.
 
 **Built by Matt Kadas**
 
 ---
 
-## Table of Contents
+## How It Works
 
-- [Features](#features)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Deployment](#deployment)
-  - [Backend Deployment](#backend-deployment)
-  - [Widget Deployment](#widget-deployment)
-- [Windows Server Deployment](#windows-server-deployment)
-- [WxCC Configuration](#wxcc-configuration)
-  - [Flow Configuration](#flow-configuration)
-  - [Desktop Layout Configuration](#desktop-layout-configuration)
-- [Configuration Reference](#configuration-reference)
-- [API Reference](#api-reference)
-- [Development](#development)
-- [Troubleshooting](#troubleshooting)
-
----
-
-## Features
-
-- **Real-time Callback List**: Displays abandoned calls with ANI, queue, timestamp, caller name, and context
-- **Priority Indicators**: Visual urgency flags (green/yellow/red) based on wait time with configurable thresholds
-- **Search & Filter**: Filter callbacks by phone number, queue, caller name, or context
-- **Claim/Release System**: Prevents duplicate callbacks across agent sessions
-- **One-Click Dial**: Initiates outbound call via Desktop SDK with configurable Outdial ANI
-- **Multi-ANI Support**: Agents can select from multiple outbound caller IDs if configured
-- **Auto-Refresh**: Polls for new callbacks every 30 seconds
-- **Configurable TTL**: Automatic cleanup of old callbacks (default: 48 hours)
-
----
-
-## Architecture
-
-```
-┌─────────────────┐         ┌─────────────────┐         ┌─────────────────┐
-│   WxCC Flow     │  POST   │    Backend      │   GET   │  Agent Desktop  │
-│  (OnDisconnect) │ ──────► │    Service      │ ◄────── │     Widget      │
-│                 │         │  (Express.js)   │         │  (LitElement)   │
-└─────────────────┘         └─────────────────┘         └─────────────────┘
-                                    │
-                                    ▼
-                            In-Memory Store
-                          (or Database for prod)
-```
-
-**Data Flow:**
-1. Customer abandons call in IVR or queue
-2. WxCC Flow triggers HTTP POST to backend with call data
-3. Backend stores callback record
-4. Agent Desktop widget polls backend for pending callbacks
-5. Agent claims, dials, and callback is removed from list
+Every 30 seconds the widget:
+1. Queries the WxCC Search API for abandoned inbound calls within a configurable lookback window (default: 8 hours)
+2. Queries the same API for outbound calls in the same window
+3. Cross-references them — if an outbound call to a number was placed **after** the abandon time, that record is marked **Called Back** and hidden by default
+4. Agent clicks **Dial** directly on any card to initiate the callback via the Desktop SDK
 
 ---
 
 ## Prerequisites
 
-- Webex Contact Center tenant with Flow Designer access
-- GitHub account (for widget hosting)
-- Backend hosting account (Render, Railway, Fly.io, or similar) **or** a Windows Server with Node.js 18+
-- Admin access to WxCC Control Hub for Desktop Layout configuration
+- Webex Contact Center tenant with agent desktop access
+- Admin access to WxCC Control Hub (for Desktop Layout configuration)
 - Outdial Entry Point and ANI configured in WxCC
+- GitHub account (for hosting the widget via GitHub Pages)
 
 ---
 
 ## Deployment
 
-### Backend Deployment
+### Step 1 — Host the widget
 
-The backend is a Node.js/Express application that stores callback records and serves the REST API.
+The widget is a single JavaScript file served from GitHub Pages.
 
-#### Option 1: Render.com (Recommended)
+1. Fork [github.com/kadammmmm/wxcc-abandoned-calls-widget](https://github.com/kadammmmm/wxcc-abandoned-calls-widget)
+2. Go to your fork's **Settings → Pages**
+3. Set Source to **Deploy from a branch**, branch `main`, folder `/ (root)` → Save
+4. Your widget URL will be: `https://<your-username>.github.io/wxcc-abandoned-calls-widget/index.js`
 
-1. Fork this repository to your GitHub account
-2. Log in to [Render.com](https://render.com)
-3. Click **New > Web Service**
-4. Connect your GitHub account and select the forked repository
-5. Configure the service:
+Pages goes live within ~2 minutes of enabling it.
 
-| Setting | Value |
-|---------|-------|
-| **Name** | `bs-callback-widget` (or your preference) |
-| **Root Directory** | `backend` |
-| **Runtime** | `Node` |
-| **Build Command** | `npm install` |
-| **Start Command** | `npm start` |
+### Step 2 — Add the widget to your Desktop Layout
 
-6. Add environment variables:
+In **Control Hub → Contact Center → Desktop Experience → Layouts**, edit your layout JSON and add the widget to the `navigation` array.
 
-| Variable | Value | Description |
-|----------|-------|-------------|
-| `CALLBACK_TTL_HOURS` | `48` | Hours before callbacks expire |
-| `ABANDON_API_KEY` | *(your secret)* | If set, WxCC Flow must send this in `X-API-Key` header on `POST /api/abandon` |
-| `ADMIN_API_KEY` | *(your secret)* | If set, required on all admin/debug endpoints |
-
-7. Click **Create Web Service**
-8. Note your service URL (e.g., `https://your-service.onrender.com`)
-
-**Custom Domain (Optional):**
-- In Render dashboard, go to Settings > Custom Domains
-- Add your domain (e.g., `abandoncallbacks.yourdomain.com`)
-- Configure DNS CNAME record as instructed
-
-#### Option 2: Railway.app
-
-1. Log in to [Railway.app](https://railway.app)
-2. Click **New Project > Deploy from GitHub repo**
-3. Select your forked repository
-4. Railway auto-detects Node.js
-5. Go to **Settings** and set:
-   - Root Directory: `backend`
-6. Add environment variables in **Variables** tab:
-   - `CALLBACK_TTL_HOURS`: `48`
-   - `ABANDON_API_KEY`: *(your secret)*
-   - `ADMIN_API_KEY`: *(your secret)*
-7. Deploy and note your service URL
-
-#### Option 3: Fly.io
-
-1. Install Fly CLI: `curl -L https://fly.io/install.sh | sh`
-2. Navigate to backend directory: `cd backend`
-3. Create Fly app:
-```bash
-fly launch --name bs-callback-widget
-```
-4. Set environment variables:
-```bash
-fly secrets set CALLBACK_TTL_HOURS=48
-fly secrets set ABANDON_API_KEY=your-secret
-fly secrets set ADMIN_API_KEY=your-admin-secret
-```
-5. Deploy:
-```bash
-fly deploy
-```
-
-#### Option 4: Windows Server (Self-Hosted)
-
-Use the included `deploy.ps1` script to install the backend as a persistent Windows service. See the [Windows Server Deployment](#windows-server-deployment) section below for full details.
-
-#### Option 5: Self-Hosted (Docker)
-
-```dockerfile
-FROM node:18-alpine
-WORKDIR /app
-COPY backend/package*.json ./
-RUN npm ci --only=production
-COPY backend/ .
-ENV PORT=3000
-ENV CALLBACK_TTL_HOURS=48
-EXPOSE 3000
-CMD ["npm", "start"]
-```
-
-Build and run:
-```bash
-docker build -t callback-widget-backend .
-docker run -p 3000:3000 \
-  -e CALLBACK_TTL_HOURS=48 \
-  -e ABANDON_API_KEY=your-secret \
-  -e ADMIN_API_KEY=your-admin-secret \
-  callback-widget-backend
-```
-
-#### Verify Backend Deployment
-
-```bash
-curl https://your-backend-url.com/health
-```
-
-Expected response:
-```json
-{
-  "status": "healthy",
-  "timestamp": "2024-01-15T10:30:00.000Z",
-  "callbackCount": 0,
-  "callbackTTLHours": 48
-}
-```
-
----
-
-### Widget Deployment
-
-The widget is a LitElement web component bundled as an IIFE script.
-
-#### Option 1: GitHub Pages (Recommended)
-
-1. Fork this repository
-2. Build the widget locally:
-```bash
-npm install
-NODE_ENV=production npm run build
-cp dist/callback-widget.js index.js
-```
-3. Commit and push:
-```bash
-git add .
-git commit -m "Build widget"
-git push
-```
-4. Enable GitHub Pages:
-   - Go to repository Settings > Pages
-   - Source: Deploy from branch
-   - Branch: `main` / `root`
-5. Widget URL: `https://<username>.github.io/<repo-name>/index.js`
-
-#### Option 2: Backend Hosting
-
-The backend can also serve the widget file:
-
-1. Build the widget: `npm run build`
-2. The `dist/callback-widget.js` file is served at `/widget/callback-widget.js`
-3. Widget URL: `https://your-backend-url.com/widget/callback-widget.js`
-
-#### Option 3: CDN (CloudFlare, AWS S3, etc.)
-
-1. Build the widget: `npm run build`
-2. Upload `dist/callback-widget.js` to your CDN
-3. Configure CORS headers to allow WxCC Desktop domain
-
----
-
-## WxCC Configuration
-
-### Flow Configuration
-
-Add an HTTP Request node to your flow that triggers when a call is abandoned.
-
-#### HTTP Request Node Settings
-
-| Setting | Value |
-|---------|-------|
-| **Request URL** | `https://your-backend-url.com/api/abandon` |
-| **Method** | `POST` |
-| **Content Type** | `application/json` |
-| **Header: X-API-Key** | *(value of your `ABANDON_API_KEY` env var, if configured)* |
-
-#### Request Body
-
-```json
-{
-  "ani": "{{NewPhoneContact.ANI}}",
-  "queue": "{{Queue.name}}",
-  "context": "{{your_context_variable}}",
-  "callerName": "{{your_caller_name_variable}}",
-  "dnis": "{{NewPhoneContact.DNIS}}"
-}
-```
-
-**Available Flow Variables:**
-
-| Field | Description | Example |
-|-------|-------------|---------|
-| `ani` | Caller's phone number (required) | `+13305551234` |
-| `queue` | Queue name or ID | `Sales` or `uuid` |
-| `context` | IVR context, reason for call | `Billing inquiry` |
-| `callerName` | Caller name if collected | `John Smith` |
-| `dnis` | Dialed number | `+18005559999` |
-
-#### Custom Fields
-
-You can pass any additional data fields to display in the widget. There are two methods:
-
-**Method 1: customFields Object (Recommended)**
-
-```json
-{
-  "ani": "{{NewPhoneContact.ANI}}",
-  "queue": "{{Queue.name}}",
-  "customFields": {
-    "Account Number": "{{accountNumber}}",
-    "VIP Status": "{{vipTier}}",
-    "Product Interest": "{{selectedProduct}}",
-    "Previous Agent": "{{lastAgentName}}"
-  }
-}
-```
-
-**Method 2: Prefixed Fields**
-
-Use `custom_` prefix for automatic label conversion:
-
-```json
-{
-  "ani": "{{NewPhoneContact.ANI}}",
-  "queue": "{{Queue.name}}",
-  "custom_accountNumber": "{{accountNumber}}",
-  "custom_vipStatus": "{{vipTier}}",
-  "custom_productInterest": "{{selectedProduct}}"
-}
-```
-
-The prefix is removed and camelCase is converted to readable labels:
-- `custom_accountNumber` becomes "Account Number"
-- `custom_vipStatus` becomes "Vip Status"
-
-Custom fields are displayed in a dedicated section on each callback card and are searchable via the filter.
-
-#### Flow Placement
-
-Trigger the HTTP Request when:
-- `QueueContactEvent.reason == "Abandoned"`
-- Or on disconnect when `Queue.waitTime > 0`
-
----
-
-### Desktop Layout Configuration
-
-Add the callback widget to your Desktop Layout JSON.
-
-#### Navigation Panel Layout (Recommended)
-
-Add to the `navigation` array in your desktop layout:
+#### Minimal layout snippet (nav panel)
 
 ```json
 {
   "nav": {
-    "label": "Callbacks",
-    "icon": "call-log",
+    "label": "Abandoned Calls",
+    "icon": "icon-missed-call",
     "iconType": "momentum",
-    "navigateTo": "callbacks",
+    "navigateTo": "abandoned-calls",
     "align": "top"
   },
   "page": {
-    "id": "callbacks",
+    "id": "abandoned-calls",
     "widgets": {
-      "callback-area": {
+      "comp1": {
         "comp": "bs-callback-widget",
-        "script": "https://your-username.github.io/bs-callback-widget/index.js",
+        "script": "https://<your-username>.github.io/wxcc-abandoned-calls-widget/index.js",
         "attributes": {
           "darkmode": "$STORE.app.darkMode"
         },
         "properties": {
-          "backendUrl": "https://your-backend-url.com/api",
-          "accessToken": "$STORE.auth.accessToken",
-          "outdialEp": "$STORE.agent.outDialEp",
-          "outdialAni": "+18005551234",
-          "priorityWarningMins": 60,
-          "priorityCriticalMins": 120
+          "accessToken":  "$STORE.auth.accessToken",
+          "outdialEp":    "$STORE.agent.outDialEp",
+          "outdialAni":   "+18005551234"
         }
-      },
-      "main-area": {
-        "comp": "agentx-wc-interaction-control"
       }
     },
     "layout": {
-      "areas": [["callback-area", "main-area"]],
-      "size": {
-        "cols": ["35%", "65%"],
-        "rows": [1]
-      }
+      "areas": [["comp1"]],
+      "size": { "cols": [1], "rows": [1] }
     }
   }
 }
 ```
 
-#### Multi-ANI Configuration
-
-If agents need to select from multiple outbound caller IDs:
-
-```json
-"properties": {
-  "backendUrl": "https://your-backend-url.com/api",
-  "accessToken": "$STORE.auth.accessToken",
-  "outdialEp": "$STORE.agent.outDialEp",
-  "outdialAniList": "+18005551234,+18005555678,+18005559999",
-  "priorityWarningMins": 60,
-  "priorityCriticalMins": 120
-}
-```
-
-When `outdialAniList` contains multiple numbers, agents see a selection modal before dialing.
-
 ---
 
 ## Configuration Reference
 
-### Widget Properties
+All properties are set in the Desktop Layout JSON `properties` block.
 
-| Property | Type | Required | Default | Description |
-|----------|------|----------|---------|-------------|
-| `backendUrl` | String | Yes | - | Backend API URL (include `/api`) |
-| `outdialEp` | String | Yes | - | Outdial Entry Point ID. Use `$STORE.agent.outDialEp` |
-| `outdialAni` | String | Yes* | - | Single Outdial ANI (e.g., `+18005551234`) |
-| `outdialAniList` | String | Yes* | - | Comma-separated ANIs for multi-select |
-| `accessToken` | String | No | - | Set to `$STORE.auth.accessToken` as fallback if SDK token unavailable |
-| `priorityWarningMins` | Number | No | `60` | Minutes until yellow warning indicator |
-| `priorityCriticalMins` | Number | No | `120` | Minutes until red critical indicator |
+| Property | Required | Default | Description |
+|---|---|---|---|
+| `accessToken` | Yes | — | Set to `"$STORE.auth.accessToken"` |
+| `outdialEp` | Yes | — | Outdial Entry Point ID. Use `"$STORE.agent.outDialEp"` to auto-resolve |
+| `outdialAni` | Yes* | — | Single outbound caller ID shown to customer (e.g. `"+18005551234"`) |
+| `outdialAniList` | Yes* | — | Comma-separated list of ANIs — shows a selector modal when >1 |
+| `datacenter` | No | auto | WxCC datacenter: `us1` `eu1` `eu2` `anz1` `ca1` `jp1` `sg1` |
+| `lookbackMinutes` | No | `480` | How far back to search for abandoned calls (8 hours) |
+| `pollIntervalSeconds` | No | `30` | How often the widget refreshes |
+| `priorityWarningMins` | No | `60` | Minutes before card border turns yellow |
+| `priorityCriticalMins` | No | `120` | Minutes before card border turns red (pulsing) |
 
 *Either `outdialAni` or `outdialAniList` is required.
 
-### Backend Environment Variables
+### Multi-ANI example
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `PORT` | No | `3000` | Server port |
-| `CALLBACK_TTL_HOURS` | No | `48` | Hours before callbacks automatically expire |
-| `ABANDON_API_KEY` | No | *(open)* | If set, `POST /api/abandon` requires `X-API-Key: <value>` header |
-| `ADMIN_API_KEY` | No | *(open)* | If set, required on `GET /api/debug` and `DELETE /api/callbacks` endpoints |
-
-### Priority Indicator Thresholds
-
-| Wait Time | Indicator | Description |
-|-----------|-----------|-------------|
-| < `priorityWarningMins` | Green | Normal priority |
-| `priorityWarningMins` to `priorityCriticalMins` | Yellow | Warning - needs attention |
-| > `priorityCriticalMins` | Red (pulsing) | Critical - urgent follow-up |
-
----
-
-## API Reference
-
-### Endpoints
-
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| `GET` | `/health` | — | Health check with callback count and TTL |
-| `POST` | `/api/abandon` | `ABANDON_API_KEY` | Create callback record (called by Flow) |
-| `GET` | `/api/callbacks` | — | List pending/claimed callbacks, sorted oldest-first |
-| `POST` | `/api/callbacks/:id/claim` | — | Claim a callback for exclusive handling |
-| `POST` | `/api/callbacks/:id/release` | — | Release claimed callback back to pool |
-| `POST` | `/api/callbacks/:id/complete` | — | Remove callback after dial (immediate delete) |
-| `GET` | `/api/stats` | — | Get callback statistics |
-| `GET` | `/api/debug` | `ADMIN_API_KEY` | View full callback store |
-| `DELETE` | `/api/callbacks/:id` | `ADMIN_API_KEY` | Delete a single callback |
-| `DELETE` | `/api/callbacks` | `ADMIN_API_KEY` | Clear all callbacks |
-
-### POST /api/abandon
-
-Create a new callback record.
-
-**Request:**
 ```json
-{
-  "ani": "+13305551234",
-  "queue": "Sales",
-  "context": "Billing inquiry",
-  "callerName": "John Smith",
-  "dnis": "+18005559999"
+"properties": {
+  "accessToken":          "$STORE.auth.accessToken",
+  "outdialEp":            "$STORE.agent.outDialEp",
+  "outdialAniList":       "+18005551234,+18005559999",
+  "datacenter":           "us1",
+  "lookbackMinutes":      480,
+  "priorityWarningMins":  30,
+  "priorityCriticalMins": 60
 }
 ```
 
-**Response:**
-```json
-{
-  "message": "Callback created",
-  "id": "uuid-here"
-}
-```
+When `outdialAniList` contains more than one number, the agent sees a picker before the call is placed.
 
 ---
 
-## Development
+## Features
 
-### Local Development
-
-```bash
-# Clone repository
-git clone https://github.com/your-username/wxcc-callback-widget.git
-cd wxcc-callback-widget
-
-# Install dependencies
-npm install
-
-# Production build
-NODE_ENV=production npm run build
-
-# Run backend locally
-cd backend
-npm install
-npm start
-```
-
-### Build Commands
-
-| Command | Description |
-|---------|-------------|
-| `NODE_ENV=production npm run build` | Production build to `dist/callback-widget.js` (~287 KB minified) |
-| `npm run build` | Development build (larger, includes source maps) |
-| `npm run deploy` | Production build + copy to `index.js` for GitHub Pages |
-
-### Project Structure
-
-```
-bs-callback-widget/
-├── src/
-│   └── callback-widget.js    # LitElement widget source
-├── backend/
-│   ├── server.js             # Express API server
-│   └── package.json
-├── dist/
-│   └── callback-widget.js    # Built widget (after npm run build)
-├── docs/
-│   ├── COMPLETE-SETUP-GUIDE.md
-│   ├── DEPLOYMENT.md
-│   ├── FLOW-CONFIGURATION.md
-│   └── navigation-layout.json
-├── deploy.ps1                # Windows Server deployment script
-├── .env.example              # Environment variable template
-├── package.json
-├── webpack.config.cjs
-└── README.md
-```
+- **Abandoned call list** — pulls directly from WxCC Search API, no IVR flow changes needed
+- **Already-called-back detection** — outbound calls are cross-referenced; handled records are hidden by default
+- **Show/Hide Handled toggle** — appears in the stats bar whenever handled records exist; reveals them greyed out
+- **Priority indicators** — green / yellow / red left border based on wait time, with configurable thresholds
+- **One-click Dial** — launches outbound call via Desktop SDK; card is immediately marked Handled
+- **Multi-ANI support** — picker modal when multiple caller IDs are configured
+- **Search/filter** — filters by phone number or queue name in real time
 
 ---
 
 ## Troubleshooting
 
-### Widget Not Loading
+**"Search API 401"** — Token is missing or expired. Confirm `"accessToken": "$STORE.auth.accessToken"` is in properties.
 
-1. Check browser console for errors
-2. Verify script URL is accessible (try opening in browser)
-3. Confirm CORS is not blocking requests
-4. Check that `comp` name matches: `bs-callback-widget`
+**"Search API 404"** — Wrong datacenter. Set `datacenter` explicitly (e.g. `"eu1"`).
 
-### Outdial Fails
+**"GraphQL query error"** — Verify the agent profile has the `cjp:config_read` scope (standard for all WxCC agents).
 
-1. Verify `outdialEp` is set (check `$STORE.agent.outDialEp` in console)
-2. Confirm `outdialAni` is a valid, hardcoded phone number
-3. Check agent has Outdial permissions in Control Hub
-4. Review browser console for specific error messages
+**No calls appearing** — Confirm there are actual abandoned calls in the window by checking WxCC Analyzer. Try increasing `lookbackMinutes`.
 
-### Callbacks Not Appearing
+**Calls incorrectly marked as Called Back** — The outbound cross-reference checks both `ani` and `dnis` fields on outdial records. Open the browser console and look for `[CallbackWidget] Search API polled` to inspect the raw counts. If needed, open an issue with a sanitized sample of the task record.
 
-1. Test backend health: `curl https://your-backend-url.com/health`
-2. Check Flow HTTP Request is triggering (add debug logging)
-3. Verify backend URL in widget properties includes `/api`
-4. Check backend logs in hosting dashboard
+**Dial button not working** — Check that `outdialEp` resolves to a value (`$STORE.agent.outDialEp` should auto-fill from the agent's profile). Verify the agent has Outdial permissions in Control Hub.
 
-### Backend Restarting Loses Data
+### Console debug snippet
 
-The default backend uses in-memory storage. For production:
-- Use a paid tier that doesn't sleep (Render, Railway paid plans)
-- Or implement database storage (MongoDB, PostgreSQL, Redis)
-
-### Console Debug Commands
-
-Run in browser console on Agent Desktop to inspect the live widget instance:
+Paste this in the browser console on Agent Desktop to inspect the live widget:
 
 ```javascript
 function findWidget(root = document) {
   let w = root.querySelector('bs-callback-widget');
   if (w) return w;
   for (const el of root.querySelectorAll('*')) {
-    if (el.shadowRoot) {
-      w = findWidget(el.shadowRoot);
-      if (w) return w;
-    }
+    if (el.shadowRoot) { w = findWidget(el.shadowRoot); if (w) return w; }
   }
-  return null;
 }
-
 const w = findWidget();
-console.log('Backend URL:', w?.backendUrl);
+console.log('Datacenter:', w?.datacenter || w?._getDatacenter?.());
 console.log('Outdial EP:', w?.outdialEp);
-console.log('Outdial ANI:', w?.outdialAni);
 console.log('Agent ID:', w?.agentId);
 console.log('Callbacks:', w?.callbacks);
 ```
 
 ---
 
-## Windows Server Deployment
+## Development
 
-A self-contained deployment package is available for organizations that need to host the backend on their own Windows infrastructure.
+```bash
+# Install dependencies
+npm install
 
-### What's Included
+# Build widget to dist/callback-widget.js
+npm run build
 
-| File | Purpose |
-|------|---------|
-| `deploy.ps1` | PowerShell script — installs dependencies, creates a Windows service, opens the firewall port |
-| `.env.example` | Template showing all supported environment variables |
-| `wxcc-callback-widget-deploy.zip` | Ready-to-extract archive of all required files (no `node_modules`) |
-
-### Requirements
-
-- Windows Server 2019 or 2022 (or Windows 10/11)
-- Node.js 18 or later ([nodejs.org](https://nodejs.org))
-- PowerShell 5.1+ (built into Windows)
-- Run as Administrator
-
-### Quick Start
-
-1. Extract `wxcc-callback-widget-deploy.zip` to your server (e.g., `C:\Apps\wxcc-callback-widget`)
-2. Open PowerShell **as Administrator** in that folder
-3. Run the deployment script:
-
-```powershell
-.\deploy.ps1
+# Copy build to index.js (for GitHub Pages)
+cp dist/callback-widget.js index.js
 ```
 
-The script will:
-- Verify Node.js 18+ is installed
-- Prompt for port, TTL, and optional API keys
-- Install backend dependencies (`npm install --omit=dev`)
-- Install [PM2](https://pm2.keymetrics.io/) globally if not already present
-- Start the backend as a named PM2 process
-- Register PM2 with Windows Task Scheduler for auto-start on boot
-- Create an inbound Windows Firewall rule for the configured port
-- Run a health check and print all local network addresses
+### Project structure
 
-### Options
-
-```powershell
-# Use a custom port
-.\deploy.ps1 -Port 8080
-
-# Use a custom service name
-.\deploy.ps1 -ServiceName MyCallbackService
-
-# Remove the service and firewall rule
-.\deploy.ps1 -Uninstall
 ```
-
-### After Deployment
-
-Once running, use one of the displayed network addresses as your `backendUrl` in the WxCC Desktop Layout (e.g., `http://192.168.1.50:3000/api`). If this server is reachable from the public internet or via a reverse proxy, use that address instead.
-
-For complete post-deployment configuration (widget URL, WxCC Flow setup, Desktop Layout JSON), see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
-
----
-
-## Support
-
-For issues or questions, open an issue in the repository.
+wxcc-abandoned-calls-widget/
+├── src/
+│   └── callback-widget.js      # LitElement widget source
+├── dist/
+│   └── callback-widget.js      # Built bundle
+├── index.js                    # GitHub Pages entry point (copy of dist)
+├── docs/
+│   └── DEPLOYMENT-POLLING.md   # Extended deployment reference
+├── package.json
+└── webpack.config.cjs
+```
 
 ---
 
 ## License
 
-MIT License - Matt Kadas
-
----
-
-**Matt Kadas**
+MIT — Matt Kadas
