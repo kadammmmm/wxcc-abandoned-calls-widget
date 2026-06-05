@@ -1212,7 +1212,7 @@ class CallbackWidget extends LitElement {
   render() {
     const stats = this._getStats();
     const filtered = this._getFilteredCallbacks();
-    const allHandled = this.callbacks.length > 0 && stats.pending === 0 && !this.searchQuery;
+    const allHandled = this.callbacks.length > 0 && stats.pending === 0 && !this.searchQuery && !this.showCalledBack;
 
     return html`
       <div class="panel-container">
