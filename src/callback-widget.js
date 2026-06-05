@@ -838,7 +838,7 @@ class CallbackWidget extends LitElement {
 
       if (!abandonedRes.ok) {
         const errText = await abandonedRes.text().catch(() => '');
-        throw new Error(`Search API ${abandonedRes.status}${errText ? ': ' + errText.slice(0, 120) : ''}`);
+        throw new Error(`Search API ${abandonedRes.status}: ${errText}`);
       }
 
       const abandonedData = await abandonedRes.json();
