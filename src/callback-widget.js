@@ -830,6 +830,7 @@ class CallbackWidget extends LitElement {
           direction
           origin
           destination
+          owner { id name }
         }
         pageInfo { hasNextPage endCursor }
       }
@@ -863,15 +864,14 @@ class CallbackWidget extends LitElement {
 
       this._log('Search API polled', { abandoned: abandonedTasks.length, outbound: outboundTasks.length });
 
-      // Build map: normalized ANI -> array of outbound call times
-      // For outdial tasks, destination = customer's number being called back
-      const outboundTimesByAni = new Map();
+      // Build map: normalized ANI -> array of { time, agent } for outbound calls
+      const outboundByAni = new Map();
       for (const task of outboundTasks) {
         const key = this._normalizeAni(task.destination) || this._normalizeAni(task.origin);
         if (!key) continue;
-        const times = outboundTimesByAni.get(key) || [];
-        times.push(task.createdTime || 0);
-        outboundTimesByAni.set(key, times);
+        const entries = outboundByAni.get(key) || [];
+        entries.push({ time: task.createdTime || 0, agent: task.owner?.name || task.owner?.id || null });
+        outboundByAni.set(key, entries);
       }
 
       const prev = this.callbacks;
@@ -879,11 +879,12 @@ class CallbackWidget extends LitElement {
       this.callbacks = abandonedTasks.map(task => {
         const key = this._normalizeAni(task.origin);
         const abandonEndTime = task.createdTime || 0;
-        const outTimes = outboundTimesByAni.get(key) || [];
-        const apiCallbackMade = outTimes.some(t => t > abandonEndTime);
-        // Preserve optimistic callbackMade set when agent clicked Dial (Search API lags ~1-2 min)
+        const outEntries = outboundByAni.get(key) || [];
+        const matchedEntry = outEntries.find(e => e.time > abandonEndTime);
+        const apiCallbackMade = !!matchedEntry;
         const prevRecord = prev.find(c => c.id === task.id);
         const callbackMade = apiCallbackMade || (prevRecord?.callbackMade ?? false);
+        const calledBackBy = matchedEntry?.agent || prevRecord?.calledBackBy || null;
 
         return {
           id: task.id,
@@ -891,6 +892,7 @@ class CallbackWidget extends LitElement {
           queue: task.lastQueue?.name || task.lastQueue?.id || 'Unknown Queue',
           abandonedAt: new Date(task.createdTime).toISOString(),
           callbackMade,
+          calledBackBy,
           status: callbackMade ? 'called-back' : 'pending'
         };
       }).sort((a, b) => new Date(a.abandonedAt) - new Date(b.abandonedAt));
@@ -1210,9 +1212,6 @@ class CallbackWidget extends LitElement {
   render() {
     const stats = this._getStats();
     const filtered = this._getFilteredCallbacks();
-    const uncalled = this.callbacks.filter(c => !c.callbackMade);
-    const criticalCount = uncalled.filter(c => this._getPriorityLevel(c.abandonedAt) === 'critical').length;
-    const warningCount  = uncalled.filter(c => this._getPriorityLevel(c.abandonedAt) === 'warning').length;
     const allHandled = this.callbacks.length > 0 && stats.pending === 0 && !this.searchQuery;
 
     return html`
@@ -1230,29 +1229,14 @@ class CallbackWidget extends LitElement {
         </div>
 
         <div class="stats-bar">
-          <span class="stat-pill pending">
-            Uncalled <span class="stat-pill-count">${stats.pending}</span>
-          </span>
           ${stats.calledBack > 0 ? html`
             <span class="stat-pill neutral">
               Handled <span class="stat-pill-count">${stats.calledBack}</span>
             </span>
-          ` : ''}
-          ${warningCount > 0 ? html`
-            <span class="stat-pill warning">
-              Warning <span class="stat-pill-count">${warningCount}</span>
-            </span>
-          ` : ''}
-          ${criticalCount > 0 ? html`
-            <span class="stat-pill critical">
-              Critical <span class="stat-pill-count">${criticalCount}</span>
-            </span>
-          ` : ''}
-          ${stats.calledBack > 0 ? html`
             <button
               class="toggle-called-back-btn ${this.showCalledBack ? 'active' : ''}"
               @click=${this._toggleShowCalledBack}
-            >${this.showCalledBack ? 'Hide Handled' : 'Show Handled'}</button>
+            >${this.showCalledBack ? 'Hide' : 'Show'}</button>
           ` : ''}
         </div>
 
@@ -1441,7 +1425,7 @@ class CallbackWidget extends LitElement {
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="20 6 9 17 4 12"/>
               </svg>
-              Outbound call placed
+              Called back${callback.calledBackBy ? html` &mdash; <strong style="color:var(--text-secondary)">${callback.calledBackBy}</strong>` : ''}
             </span>
           ` : html`
             <button
