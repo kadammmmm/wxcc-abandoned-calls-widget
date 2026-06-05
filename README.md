@@ -206,11 +206,16 @@ function findWidget(root = document) {
   }
 }
 const w = findWidget();
-console.log('Datacenter:',  w?.datacenter || w?._getDatacenter?.());
-console.log('Outdial EP:',  w?.outdialEp);
-console.log('Max results:', w?.maxResults);
-console.log('Callbacks:',   w?.callbacks?.length, w?.callbacks);
-console.log('Truncated:',   w?.truncated);
+console.log('Datacenter:',   w?.datacenter);
+console.log('Outdial EP:',   w?.outdialEp);
+console.log('Max results:',  w?.maxResults);
+console.log('Callbacks:',    w?.callbacks?.length, w?.callbacks);
+console.log('Truncated:',    w?.truncated);
+console.log('Queue filter:', w?._resolvedQueueIds ? [...w._resolvedQueueIds] : 'all queues');
+
+// Verify what the SDK returns for this agent's assigned queues
+const queues = await Desktop?.agentContact?.SERVICE?.webex?.cc?.getQueues?.();
+console.log('getQueues():', queues);
 ```
 
 ---

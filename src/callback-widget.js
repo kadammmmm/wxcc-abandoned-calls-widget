@@ -736,7 +736,7 @@ class CallbackWidget extends LitElement {
         this.agentState = agentInfo?.subStatus || agentInfo?.status || 'Available';
       }
 
-      this._resolvedQueueIds = this._resolveQueueIds();
+      this._resolvedQueueIds = await this._resolveQueueIds();
 
       if (!this.outdialAni) {
         try {
@@ -1001,8 +1001,8 @@ class CallbackWidget extends LitElement {
     return digits.length >= 7 ? digits : null;
   }
 
-  _resolveQueueIds() {
-    // 1. Explicit layout property wins
+  async _resolveQueueIds() {
+    // 1. Explicit layout config wins
     if (this.queueIds && typeof this.queueIds === 'string') {
       const ids = this.queueIds.split(',').map(s => s.trim()).filter(Boolean);
       if (ids.length) {
@@ -1010,7 +1010,22 @@ class CallbackWidget extends LitElement {
         return new Set(ids);
       }
     }
-    // 2. Best-effort auto-detect from SDK state (field names vary across SDK versions)
+
+    // 2. Primary: webex.cc.getQueues() — server-scoped to agent's assigned queues
+    if (Desktop.agentContact?.SERVICE?.webex?.cc?.getQueues) {
+      try {
+        const queues = await Desktop.agentContact.SERVICE.webex.cc.getQueues();
+        const ids = (queues || []).map(q => q.id).filter(Boolean);
+        if (ids.length) {
+          this._log('Queue filter: resolved via getQueues()', { count: ids.length });
+          return new Set(ids);
+        }
+      } catch (err) {
+        this._log('getQueues() failed, falling back to latestData', { error: err.message }, 'warn');
+      }
+    }
+
+    // 3. Fallback: field guessing from latestData
     const data = Desktop.agentStateInfo?.latestData;
     if (data) {
       const candidates = [
@@ -1018,11 +1033,12 @@ class CallbackWidget extends LitElement {
         data.queues, data.teamQueues, data.skillGroupIds,
       ].flat().filter(v => v && typeof v === 'string');
       if (candidates.length) {
-        this._log('Queue filter: auto-detected from SDK', { count: candidates.length });
+        this._log('Queue filter: auto-detected from latestData', { count: candidates.length });
         return new Set(candidates);
       }
     }
-    // 3. No queue info found — show all org-wide calls
+
+    // 4. No queue info — show all org-wide calls
     this._log('Queue filter: none resolved, showing all queues');
     return null;
   }
