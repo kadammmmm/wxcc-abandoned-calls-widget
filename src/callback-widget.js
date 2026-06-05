@@ -786,7 +786,7 @@ class CallbackWidget extends LitElement {
     }
 
     const datacenter = this.datacenter || this._getDatacenter();
-    const endpoint = `https://api.wxcc-${datacenter}.cisco.com/graphql`;
+    const endpoint = `https://api.wxcc-${datacenter}.cisco.com/search`;
     const now = Date.now();
     const from = now - ((this.lookbackMinutes || 480) * 60 * 1000);
 
