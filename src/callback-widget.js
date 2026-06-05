@@ -832,7 +832,6 @@ class CallbackWidget extends LitElement {
       taskDetails(
         from: ${from}
         to: ${now}
-        first: ${limit}
         filter: {
           and: [
             { channelType: { equals: telephony } }
@@ -856,7 +855,6 @@ class CallbackWidget extends LitElement {
       taskDetails(
         from: ${from}
         to: ${now}
-        first: ${limit * 2}
         filter: {
           and: [
             { channelType: { equals: telephony } }
@@ -899,9 +897,12 @@ class CallbackWidget extends LitElement {
         throw new Error(abandonedData.errors[0]?.message || 'GraphQL query error');
       }
 
-      const abandonedTasks = abandonedData?.data?.taskDetails?.tasks || [];
+      const allAbandonedTasks = abandonedData?.data?.taskDetails?.tasks || [];
       const outboundTasks = outboundData?.data?.taskDetails?.tasks || [];
-      const abandonedTruncated = !!abandonedData?.data?.taskDetails?.pageInfo?.hasNextPage;
+      // Cap abandoned results client-side; API doesn't support first: argument
+      const abandonedTasks = allAbandonedTasks.slice(0, limit);
+      const abandonedTruncated = !!abandonedData?.data?.taskDetails?.pageInfo?.hasNextPage
+        || allAbandonedTasks.length > limit;
       const outboundTruncated = !!outboundData?.data?.taskDetails?.pageInfo?.hasNextPage;
       this.truncated = abandonedTruncated || outboundTruncated;
       this._truncatedAbandon = abandonedTruncated;
