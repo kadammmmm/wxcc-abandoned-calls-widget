@@ -679,6 +679,7 @@ class CallbackWidget extends LitElement {
     }
     await this._initSDK();
     this._startPolling();
+    this._fetchCallbacks(); // fetch immediately on load, don't wait for first interval
   }
 
   disconnectedCallback() {
