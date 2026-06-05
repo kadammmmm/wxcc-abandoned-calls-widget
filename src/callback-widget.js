@@ -902,13 +902,25 @@ class CallbackWidget extends LitElement {
   }
 
   _getToken() {
-    try {
-      const sdkToken = window.myAgentService?.webex?.token?.access_token;
-      if (sdkToken) return sdkToken;
-      const storeToken = Desktop.agentContact?.SERVICE?.webex?.token?.access_token;
-      if (storeToken) return storeToken;
-    } catch (e) { /* SDK not ready */ }
-    return this.accessToken || null;
+    const webex = window.myAgentService?.webex
+      || Desktop.agentContact?.SERVICE?.webex;
+
+    if (webex) {
+      const candidates = [
+        webex.token?.access_token,
+        webex.credentials?.supertoken?.access_token,
+        webex.credentials?.access_token,
+        webex.internal?.credentials?.supertoken?.access_token,
+      ];
+      for (const t of candidates) {
+        if (t && typeof t === 'string' && t.length > 20) return t;
+      }
+    }
+
+    // Fallback: token passed explicitly via layout property
+    if (this.accessToken && this.accessToken.length > 20) return this.accessToken;
+
+    return null;
   }
 
   _normalizeAni(ani) {
