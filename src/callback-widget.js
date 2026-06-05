@@ -786,41 +786,51 @@ class CallbackWidget extends LitElement {
     }
 
     const datacenter = this.datacenter || this._getDatacenter();
-    const endpoint = `https://api.wxcc-${datacenter}.cisco.com/search`;
+    const endpoint = `https://api.wxcc-${datacenter}.cisco.com/graphql`;
     const now = Date.now();
     const from = now - ((this.lookbackMinutes || 480) * 60 * 1000);
 
     const abandonedQuery = `{
-      task(
+      taskDetails(
         from: ${from}
         to: ${now}
-        timeComparator: createdTime
         filter: {
           and: [
-            { terminationType: { equals: abandoned } }
-            { direction: { equals: "inbound" } }
             { channelType: { equals: telephony } }
+            { contactHandleType: { equals: "abandoned" } }
           ]
         }
       ) {
-        tasks { id ani direction terminationType channelType createdTime queuedTime }
+        tasks {
+          id
+          createdTime
+          contactHandleType
+          channelType
+          origin
+          lastQueue { id name }
+        }
         pageInfo { hasNextPage endCursor }
       }
     }`;
 
     const outboundQuery = `{
-      task(
+      taskDetails(
         from: ${from}
         to: ${now}
-        timeComparator: createdTime
         filter: {
           and: [
-            { direction: { equals: "outdial" } }
             { channelType: { equals: telephony } }
+            { direction: { equals: "outdial" } }
           ]
         }
       ) {
-        tasks { id ani direction createdTime queuedTime }
+        tasks {
+          id
+          createdTime
+          direction
+          origin
+          destination
+        }
         pageInfo { hasNextPage endCursor }
       }
     }`;
@@ -848,26 +858,27 @@ class CallbackWidget extends LitElement {
         throw new Error(abandonedData.errors[0]?.message || 'GraphQL query error');
       }
 
-      const abandonedTasks = abandonedData?.data?.task?.tasks || [];
-      const outboundTasks = outboundData?.data?.task?.tasks || [];
+      const abandonedTasks = abandonedData?.data?.taskDetails?.tasks || [];
+      const outboundTasks = outboundData?.data?.taskDetails?.tasks || [];
 
       this._log('Search API polled', { abandoned: abandonedTasks.length, outbound: outboundTasks.length });
 
       // Build map: normalized ANI -> array of outbound call times
+      // For outdial tasks, destination = customer's number being called back
       const outboundTimesByAni = new Map();
       for (const task of outboundTasks) {
-        const key = this._normalizeAni(task.ani);
+        const key = this._normalizeAni(task.destination) || this._normalizeAni(task.origin);
         if (!key) continue;
         const times = outboundTimesByAni.get(key) || [];
-        times.push(task.createdTime || task.queuedTime || 0);
+        times.push(task.createdTime || 0);
         outboundTimesByAni.set(key, times);
       }
 
       const prev = this.callbacks;
 
       this.callbacks = abandonedTasks.map(task => {
-        const key = this._normalizeAni(task.ani);
-        const abandonEndTime = task.createdTime || task.queuedTime || 0;
+        const key = this._normalizeAni(task.origin);
+        const abandonEndTime = task.createdTime || 0;
         const outTimes = outboundTimesByAni.get(key) || [];
         const apiCallbackMade = outTimes.some(t => t > abandonEndTime);
         // Preserve optimistic callbackMade set when agent clicked Dial (Search API lags ~1-2 min)
@@ -876,9 +887,9 @@ class CallbackWidget extends LitElement {
 
         return {
           id: task.id,
-          ani: task.ani,
-          queue: task.queueName || task.lastQueue?.name || 'Unknown Queue',
-          abandonedAt: new Date(task.createdTime || task.queuedTime).toISOString(),
+          ani: task.origin,
+          queue: task.lastQueue?.name || task.lastQueue?.id || 'Unknown Queue',
+          abandonedAt: new Date(task.createdTime).toISOString(),
           callbackMade,
           status: callbackMade ? 'called-back' : 'pending'
         };
