@@ -28,7 +28,9 @@ class CallbackWidget extends LitElement {
     showAniSelector:     { type: Boolean },
     searchQuery:         { type: String },
     priorityWarningMins: { type: Number, attribute: 'priority-warning-mins' },
-    priorityCriticalMins:{ type: Number, attribute: 'priority-critical-mins' }
+    priorityCriticalMins:{ type: Number, attribute: 'priority-critical-mins' },
+    maxResults:          { type: Number, attribute: 'max-results' },               // default 100
+    truncated:           { type: Boolean }
   };
 
   static styles = css`
@@ -430,6 +432,21 @@ class CallbackWidget extends LitElement {
     }
     .error-dismiss:hover { opacity: 1; }
 
+    .truncation-banner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 12px 8px;
+      padding: 8px 12px;
+      background: #fffbeb;
+      border: 1px solid #fcd34d;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #92400e;
+      line-height: 1.4;
+    }
+    .truncation-banner svg { flex-shrink: 0; color: #d97706; }
+
     .callback-list::-webkit-scrollbar { width: 6px; }
     .callback-list::-webkit-scrollbar-track { background: transparent; }
     .callback-list::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
@@ -666,6 +683,8 @@ class CallbackWidget extends LitElement {
     this.searchQuery = '';
     this.priorityWarningMins = 60;
     this.priorityCriticalMins = 120;
+    this.maxResults = 100;
+    this.truncated = false;
   }
 
   async connectedCallback() {
@@ -789,11 +808,13 @@ class CallbackWidget extends LitElement {
     const endpoint = `https://api.wxcc-${datacenter}.cisco.com/search`;
     const now = Date.now();
     const from = now - ((this.lookbackMinutes || 480) * 60 * 1000);
+    const limit = this.maxResults || 100;
 
     const abandonedQuery = `{
       taskDetails(
         from: ${from}
         to: ${now}
+        first: ${limit}
         filter: {
           and: [
             { channelType: { equals: telephony } }
@@ -817,6 +838,7 @@ class CallbackWidget extends LitElement {
       taskDetails(
         from: ${from}
         to: ${now}
+        first: ${limit * 2}
         filter: {
           and: [
             { channelType: { equals: telephony } }
@@ -861,8 +883,9 @@ class CallbackWidget extends LitElement {
 
       const abandonedTasks = abandonedData?.data?.taskDetails?.tasks || [];
       const outboundTasks = outboundData?.data?.taskDetails?.tasks || [];
+      this.truncated = !!abandonedData?.data?.taskDetails?.pageInfo?.hasNextPage;
 
-      this._log('Search API polled', { abandoned: abandonedTasks.length, outbound: outboundTasks.length });
+      this._log('Search API polled', { abandoned: abandonedTasks.length, outbound: outboundTasks.length, truncated: this.truncated });
 
       // Build map: normalized ANI -> array of { time, agent } for outbound calls
       const outboundByAni = new Map();
@@ -1254,6 +1277,17 @@ class CallbackWidget extends LitElement {
                 <line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
             </button>
+          </div>
+        ` : ''}
+
+        ${this.truncated ? html`
+          <div class="truncation-banner">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            Showing first ${this.maxResults || 100} records — reduce <strong>lookbackMinutes</strong> or increase <strong>maxResults</strong> to see all.
           </div>
         ` : ''}
 
