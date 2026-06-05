@@ -34,6 +34,7 @@ class CallbackWidget extends LitElement {
     queueIds:            { type: String, attribute: 'queue-ids' },                 // comma-sep queue IDs; optional
     groupByQueue:        { type: Boolean },
     sortBy:              { type: String },
+    customFields:        { type: String, attribute: 'custom-fields' },
   };
 
   static styles = css`
@@ -769,6 +770,7 @@ class CallbackWidget extends LitElement {
     this.maxResults = 100;
     this.truncated = false;
     this.queueIds = null;
+    this.customFields = null;
     this._resolvedQueueIds = null;
     try {
       this.groupByQueue = JSON.parse(localStorage.getItem('mk-cb-groupByQueue') ?? 'false');
@@ -937,6 +939,9 @@ class CallbackWidget extends LitElement {
           contactHandleType
           channelType
           origin
+          destination
+          contactTag
+          businessOutcome
           lastQueue { id name }
         }
         pageInfo { hasNextPage endCursor }
@@ -1030,6 +1035,9 @@ class CallbackWidget extends LitElement {
         const callbackMade = apiCallbackMade || (prevRecord?.callbackMade ?? false);
         const calledBackBy = matchedEntry?.agent || prevRecord?.calledBackBy || null;
 
+        const contactTag = Array.isArray(task.contactTag)
+          ? task.contactTag.join(', ')
+          : (task.contactTag || null);
         return {
           id: task.id,
           ani: task.origin,
@@ -1037,7 +1045,10 @@ class CallbackWidget extends LitElement {
           abandonedAt: new Date(ts).toISOString(),
           callbackMade,
           calledBackBy,
-          status: callbackMade ? 'called-back' : 'pending'
+          status: callbackMade ? 'called-back' : 'pending',
+          destination: task.destination || null,
+          contactTag,
+          businessOutcome: task.businessOutcome || null,
         };
       }).sort((a, b) => new Date(a.abandonedAt) - new Date(b.abandonedAt));
 
@@ -1676,6 +1687,16 @@ class CallbackWidget extends LitElement {
     `;
   }
 
+  get _parsedCustomFields() {
+    if (!this.customFields) return [];
+    try {
+      const parsed = JSON.parse(this.customFields);
+      return Array.isArray(parsed) ? parsed.filter(f => f && typeof f.key === 'string') : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
   _renderCallbackCard(callback) {
     const isDialing = this.dialingId === callback.id;
     const priorityLevel = callback.callbackMade ? 'normal' : this._getPriorityLevel(callback.abandonedAt);
@@ -1742,6 +1763,19 @@ class CallbackWidget extends LitElement {
             </button>
           `}
         </div>
+        ${this._parsedCustomFields.length > 0 ? html`
+          <div class="custom-fields">
+            ${this._parsedCustomFields
+              .filter(f => callback[f.key] != null && callback[f.key] !== '')
+              .map(f => html`
+                <div class="custom-field">
+                  <div class="custom-field-label">${f.label || f.key}</div>
+                  <div class="custom-field-value">${callback[f.key]}</div>
+                </div>
+              `)
+            }
+          </div>
+        ` : ''}
       </div>
     `;
   }

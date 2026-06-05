@@ -133,6 +133,7 @@ All properties are set in the `properties` block of the Desktop Layout JSON.
 | `priorityWarningMins` | No | `60` | Minutes before a card's left border turns yellow |
 | `priorityCriticalMins` | No | `120` | Minutes before a card's left border turns red (pulsing) |
 | `queueIds` | No | auto | Comma-separated queue IDs to show (e.g. `"abc-123,def-456"`). Auto-detected from the Desktop SDK if not set; falls back to showing all org-wide calls |
+| `customFields` | No | — | JSON array of extra fields to show on each card. See [Custom Fields](#custom-fields) below |
 
 *Either `outdialAni` or `outdialAniList` is required for dialing.
 
@@ -151,6 +152,49 @@ All properties are set in the `properties` block of the Desktop Layout JSON.
   "priorityCriticalMins": 60
 }
 ```
+
+### Custom Fields
+
+The `customFields` property lets you surface additional data from the WxCC task record directly on each callback card — no code changes required, just a layout update.
+
+Set it to a JSON array of `{ "key": "...", "label": "..." }` objects. Each entry adds a labelled field to the bottom of the card. Fields with no value for a given call are hidden automatically.
+
+**Available keys**
+
+| Key | Description |
+|---|---|
+| `destination` | The number the customer dialled (DNIS) |
+| `contactTag` | Tags applied to the contact |
+| `businessOutcome` | Business outcome / disposition code |
+
+**Example — show DNIS and disposition:**
+
+```json
+"customFields": "[{\"key\":\"destination\",\"label\":\"Called Number\"},{\"key\":\"businessOutcome\",\"label\":\"Outcome\"}]"
+```
+
+**Example — all three fields:**
+
+```json
+"customFields": "[{\"key\":\"destination\",\"label\":\"DNIS\"},{\"key\":\"contactTag\",\"label\":\"Tags\"},{\"key\":\"businessOutcome\",\"label\":\"Outcome\"}]"
+```
+
+**Full layout example with custom fields:**
+
+```json
+"properties": {
+  "accessToken":   "$STORE.auth.accessToken",
+  "outdialEp":     "$STORE.agent.outDialEp",
+  "outdialAni":    "+61298765432",
+  "customFields":  "[{\"key\":\"destination\",\"label\":\"Called Number\"},{\"key\":\"businessOutcome\",\"label\":\"Outcome\"}]"
+}
+```
+
+Custom field values appear in a shaded section at the bottom of each card, displayed as two columns of label/value pairs.
+
+**Note:** `destination`, `contactTag`, and `businessOutcome` are standard WxCC task fields. Their availability depends on your WxCC configuration — if a field returns empty for all calls, it simply won't appear on any card.
+
+---
 
 ### Finding your Outdial ANI
 
