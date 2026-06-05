@@ -794,7 +794,7 @@ class CallbackWidget extends LitElement {
       taskDetails(
         from: ${from}
         to: ${now}
-        timeComparator: endedTime
+        timeComparator: queuedTime
         filter: {
           and: [
             { terminationType: { equals: "abandoned" } }
@@ -802,10 +802,9 @@ class CallbackWidget extends LitElement {
             { channelType: { equals: "telephony" } }
           ]
         }
-        pagination: { cursor: "0", id: "0" }
       ) {
-        tasks { id ani dnis queueName terminationType direction queuedTime endedTime }
-        pageInfo { hasNextPage endCursor }
+        tasks { id ani queueName terminationType direction queuedTime }
+        pageInfo { hasNextPage }
       }
     }`;
 
@@ -820,10 +819,9 @@ class CallbackWidget extends LitElement {
             { channelType: { equals: "telephony" } }
           ]
         }
-        pagination: { cursor: "0", id: "0" }
       ) {
-        tasks { id ani dnis direction originatedTime queuedTime }
-        pageInfo { hasNextPage endCursor }
+        tasks { id ani direction queuedTime }
+        pageInfo { hasNextPage }
       }
     }`;
 
@@ -855,25 +853,21 @@ class CallbackWidget extends LitElement {
 
       this._log('Search API polled', { abandoned: abandonedTasks.length, outbound: outboundTasks.length });
 
-      // Build map: normalized ANI -> array of outbound call start times
-      // For outdial tasks the destination may appear in ani or dnis depending on WxCC version
+      // Build map: normalized ANI -> array of outbound call times
       const outboundTimesByAni = new Map();
       for (const task of outboundTasks) {
-        const callTime = task.originatedTime || task.queuedTime || 0;
-        for (const field of [task.ani, task.dnis]) {
-          const key = this._normalizeAni(field);
-          if (!key) continue;
-          const times = outboundTimesByAni.get(key) || [];
-          times.push(callTime);
-          outboundTimesByAni.set(key, times);
-        }
+        const key = this._normalizeAni(task.ani);
+        if (!key) continue;
+        const times = outboundTimesByAni.get(key) || [];
+        times.push(task.queuedTime || 0);
+        outboundTimesByAni.set(key, times);
       }
 
       const prev = this.callbacks;
 
       this.callbacks = abandonedTasks.map(task => {
         const key = this._normalizeAni(task.ani);
-        const abandonEndTime = task.endedTime || task.queuedTime || 0;
+        const abandonEndTime = task.queuedTime || 0;
         const outTimes = outboundTimesByAni.get(key) || [];
         const apiCallbackMade = outTimes.some(t => t > abandonEndTime);
         // Preserve optimistic callbackMade set when agent clicked Dial (Search API lags ~1-2 min)
@@ -884,7 +878,7 @@ class CallbackWidget extends LitElement {
           id: task.id,
           ani: task.ani,
           queue: task.queueName || 'Unknown Queue',
-          abandonedAt: new Date(task.endedTime || task.queuedTime).toISOString(),
+          abandonedAt: new Date(task.queuedTime).toISOString(),
           callbackMade,
           status: callbackMade ? 'called-back' : 'pending'
         };
