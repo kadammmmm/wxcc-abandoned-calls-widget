@@ -30,7 +30,8 @@ class CallbackWidget extends LitElement {
     priorityWarningMins: { type: Number, attribute: 'priority-warning-mins' },
     priorityCriticalMins:{ type: Number, attribute: 'priority-critical-mins' },
     maxResults:          { type: Number, attribute: 'max-results' },               // default 100
-    truncated:           { type: Boolean }
+    truncated:           { type: Boolean },
+    queueIds:            { type: String, attribute: 'queue-ids' }                  // comma-sep queue IDs; optional
   };
 
   static styles = css`
@@ -689,6 +690,8 @@ class CallbackWidget extends LitElement {
     this.priorityCriticalMins = 120;
     this.maxResults = 100;
     this.truncated = false;
+    this.queueIds = null;
+    this._resolvedQueueIds = null;
   }
 
   async connectedCallback() {
@@ -732,6 +735,8 @@ class CallbackWidget extends LitElement {
         this.agentId = agentInfo?.agentId || agentInfo?.id || agentInfo?.agentSessionId || null;
         this.agentState = agentInfo?.subStatus || agentInfo?.status || 'Available';
       }
+
+      this._resolvedQueueIds = this._resolveQueueIds();
 
       if (!this.outdialAni) {
         try {
@@ -899,10 +904,16 @@ class CallbackWidget extends LitElement {
 
       const allAbandonedTasks = abandonedData?.data?.taskDetails?.tasks || [];
       const outboundTasks = outboundData?.data?.taskDetails?.tasks || [];
-      // Cap abandoned results client-side; API doesn't support first: argument
-      const abandonedTasks = allAbandonedTasks.slice(0, limit);
+      // Filter to agent's queues if resolved, then cap to maxResults
+      const queueFiltered = this._resolvedQueueIds
+        ? allAbandonedTasks.filter(t =>
+            this._resolvedQueueIds.has(t.lastQueue?.id) ||
+            this._resolvedQueueIds.has(t.lastQueue?.name)
+          )
+        : allAbandonedTasks;
+      const abandonedTasks = queueFiltered.slice(0, limit);
       const abandonedTruncated = !!abandonedData?.data?.taskDetails?.pageInfo?.hasNextPage
-        || allAbandonedTasks.length > limit;
+        || queueFiltered.length > limit;
       const outboundTruncated = !!outboundData?.data?.taskDetails?.pageInfo?.hasNextPage;
       this.truncated = abandonedTruncated || outboundTruncated;
       this._truncatedAbandon = abandonedTruncated;
@@ -988,6 +999,32 @@ class CallbackWidget extends LitElement {
     if (!ani || typeof ani !== 'string') return null;
     const digits = ani.replace(/\D/g, '');
     return digits.length >= 7 ? digits : null;
+  }
+
+  _resolveQueueIds() {
+    // 1. Explicit layout property wins
+    if (this.queueIds && typeof this.queueIds === 'string') {
+      const ids = this.queueIds.split(',').map(s => s.trim()).filter(Boolean);
+      if (ids.length) {
+        this._log('Queue filter: using configured queueIds', { count: ids.length });
+        return new Set(ids);
+      }
+    }
+    // 2. Best-effort auto-detect from SDK state (field names vary across SDK versions)
+    const data = Desktop.agentStateInfo?.latestData;
+    if (data) {
+      const candidates = [
+        data.queueId, data.queueIds, data.assignedQueues,
+        data.queues, data.teamQueues, data.skillGroupIds,
+      ].flat().filter(v => v && typeof v === 'string');
+      if (candidates.length) {
+        this._log('Queue filter: auto-detected from SDK', { count: candidates.length });
+        return new Set(candidates);
+      }
+    }
+    // 3. No queue info found — show all org-wide calls
+    this._log('Queue filter: none resolved, showing all queues');
+    return null;
   }
 
   async _dialCallback(callback) {
@@ -1400,7 +1437,11 @@ class CallbackWidget extends LitElement {
             </svg>
             ${this.loading ? 'Refreshing...' : 'Just now'}
           </div>
-          <div>v2.0.0</div>
+          <div title="${this._resolvedQueueIds ? `Filtered to ${this._resolvedQueueIds.size} queue(s)` : 'Showing all queues'}">
+            ${this._resolvedQueueIds
+              ? `${this._resolvedQueueIds.size} queue${this._resolvedQueueIds.size !== 1 ? 's' : ''}`
+              : 'All queues'}
+          </div>
         </div>
       </div>
     `;

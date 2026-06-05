@@ -132,6 +132,7 @@ All properties are set in the `properties` block of the Desktop Layout JSON.
 | `maxResults` | No | `100` | Maximum abandoned call records to fetch per poll. A yellow warning appears if results are truncated |
 | `priorityWarningMins` | No | `60` | Minutes before a card's left border turns yellow |
 | `priorityCriticalMins` | No | `120` | Minutes before a card's left border turns red (pulsing) |
+| `queueIds` | No | auto | Comma-separated queue IDs to show (e.g. `"abc-123,def-456"`). Auto-detected from the Desktop SDK if not set; falls back to showing all org-wide calls |
 
 *Either `outdialAni` or `outdialAniList` is required for dialing.
 
