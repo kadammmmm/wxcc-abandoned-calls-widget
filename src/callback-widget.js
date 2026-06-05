@@ -31,7 +31,9 @@ class CallbackWidget extends LitElement {
     priorityCriticalMins:{ type: Number, attribute: 'priority-critical-mins' },
     maxResults:          { type: Number, attribute: 'max-results' },               // default 100
     truncated:           { type: Boolean },
-    queueIds:            { type: String, attribute: 'queue-ids' }                  // comma-sep queue IDs; optional
+    queueIds:            { type: String, attribute: 'queue-ids' },                 // comma-sep queue IDs; optional
+    groupByQueue:        { type: Boolean },
+    sortBy:              { type: String },
   };
 
   static styles = css`
@@ -658,6 +660,82 @@ class CallbackWidget extends LitElement {
       color: var(--text-color);
       word-break: break-word;
     }
+
+    .view-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px 2px;
+    }
+
+    .sort-select {
+      font-size: 12px;
+      font-family: inherit;
+      padding: 4px 8px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      background: var(--bg-color);
+      color: var(--text-color);
+      cursor: pointer;
+      outline: none;
+    }
+    .sort-select:hover, .sort-select:focus { border-color: var(--primary-color); }
+
+    .group-by-btn {
+      font-size: 12px;
+      font-family: inherit;
+      padding: 4px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: var(--transition);
+    }
+    .group-by-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
+    .group-by-btn.active { background: var(--primary-color); color: white; border-color: var(--primary-color); }
+
+    .queue-group { margin-bottom: 6px; }
+
+    .queue-group-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 7px 12px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-family: inherit;
+      text-align: left;
+      margin-bottom: 4px;
+      user-select: none;
+      transition: var(--transition);
+    }
+    .queue-group-header:hover { border-color: var(--primary-color); background: var(--bg-hover); }
+
+    .queue-group-chevron { font-size: 10px; color: var(--text-muted); flex-shrink: 0; width: 12px; }
+
+    .queue-group-name {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      flex: 1;
+    }
+
+    .queue-group-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 1px 8px;
+      border-radius: 10px;
+      background: var(--bg-hover);
+      color: var(--text-muted);
+    }
+    .queue-group-badge.has-pending { background: rgba(26,75,122,0.1); color: var(--primary-color); }
   `;
 
   constructor() {
@@ -692,6 +770,15 @@ class CallbackWidget extends LitElement {
     this.truncated = false;
     this.queueIds = null;
     this._resolvedQueueIds = null;
+    try {
+      this.groupByQueue = JSON.parse(localStorage.getItem('mk-cb-groupByQueue') ?? 'false');
+      this.sortBy = localStorage.getItem('mk-cb-sortBy') ?? 'oldest';
+      this._collapsedQueues = new Set(JSON.parse(localStorage.getItem('mk-cb-collapsedQueues') ?? '[]'));
+    } catch (e) {
+      this.groupByQueue = false;
+      this.sortBy = 'oldest';
+      this._collapsedQueues = new Set();
+    }
   }
 
   async connectedCallback() {
@@ -1240,13 +1327,82 @@ class CallbackWidget extends LitElement {
       ? this.callbacks
       : this.callbacks.filter(c => !c.callbackMade);
 
-    if (!this.searchQuery || !this.searchQuery.trim()) return results;
+    if (this.searchQuery?.trim()) {
+      const q = this.searchQuery.toLowerCase().trim();
+      results = results.filter(c =>
+        (c.ani  || '').toLowerCase().includes(q) ||
+        (c.queue|| '').toLowerCase().includes(q)
+      );
+    }
 
-    const q = this.searchQuery.toLowerCase().trim();
-    return results.filter(c =>
-      (c.ani  || '').toLowerCase().includes(q) ||
-      (c.queue|| '').toLowerCase().includes(q)
-    );
+    return this._applySortOrder(results);
+  }
+
+  _applySortOrder(callbacks) {
+    const arr = [...callbacks];
+    if (this.sortBy === 'newest') {
+      return arr.sort((a, b) => new Date(b.abandonedAt) - new Date(a.abandonedAt));
+    }
+    if (this.sortBy === 'queue') {
+      return arr.sort((a, b) => {
+        const qcmp = (a.queue || '').localeCompare(b.queue || '');
+        return qcmp !== 0 ? qcmp : new Date(a.abandonedAt) - new Date(b.abandonedAt);
+      });
+    }
+    return arr.sort((a, b) => new Date(a.abandonedAt) - new Date(b.abandonedAt));
+  }
+
+  _getGroupedCallbacks(callbacks) {
+    const groups = new Map();
+    for (const cb of callbacks) {
+      const key = cb.queue || 'Unknown Queue';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(cb);
+    }
+    return groups;
+  }
+
+  _toggleQueueCollapse(queueName) {
+    if (this._collapsedQueues.has(queueName)) {
+      this._collapsedQueues.delete(queueName);
+    } else {
+      this._collapsedQueues.add(queueName);
+    }
+    try { localStorage.setItem('mk-cb-collapsedQueues', JSON.stringify([...this._collapsedQueues])); } catch (e) {}
+    this.requestUpdate();
+  }
+
+  _setSortBy(value) {
+    this.sortBy = value;
+    try { localStorage.setItem('mk-cb-sortBy', value); } catch (e) {}
+  }
+
+  _setGroupByQueue(value) {
+    this.groupByQueue = value;
+    try { localStorage.setItem('mk-cb-groupByQueue', JSON.stringify(value)); } catch (e) {}
+  }
+
+  _renderQueueGroup(queueName, cards) {
+    const collapsed = this._collapsedQueues.has(queueName);
+    const pendingCount = cards.filter(c => !c.callbackMade).length;
+    return html`
+      <div class="queue-group">
+        <button class="queue-group-header"
+                aria-expanded=${String(!collapsed)}
+                @click=${() => this._toggleQueueCollapse(queueName)}>
+          <span class="queue-group-chevron">${collapsed ? '▶' : '▼'}</span>
+          <span class="queue-group-name">${queueName}</span>
+          <span class="queue-group-badge ${pendingCount > 0 ? 'has-pending' : ''}">
+            ${pendingCount > 0 ? `${pendingCount} pending` : 'all handled'}
+          </span>
+        </button>
+        ${collapsed ? '' : html`
+          <div class="queue-group-cards">
+            ${cards.map(c => this._renderCallbackCard(c))}
+          </div>
+        `}
+      </div>
+    `;
   }
 
   _getWaitTimeMinutes(abandonedAt) {
@@ -1405,6 +1561,19 @@ class CallbackWidget extends LitElement {
               ` : ''}
             </div>
           </div>
+          <div class="view-controls">
+            <select class="sort-select" aria-label="Sort order"
+                    @change=${e => this._setSortBy(e.target.value)}>
+              <option value="oldest" .selected=${this.sortBy === 'oldest'}>Oldest first</option>
+              <option value="newest" .selected=${this.sortBy === 'newest'}>Newest first</option>
+              <option value="queue"  .selected=${this.sortBy === 'queue'}>By queue A→Z</option>
+            </select>
+            <button class="group-by-btn ${this.groupByQueue ? 'active' : ''}"
+                    aria-pressed=${String(this.groupByQueue)}
+                    @click=${() => this._setGroupByQueue(!this.groupByQueue)}>
+              Group by Queue
+            </button>
+          </div>
         ` : ''}
 
         ${this.callbacks.length === 0 ? html`
@@ -1439,7 +1608,10 @@ class CallbackWidget extends LitElement {
           </div>
         ` : html`
           <div class="callback-list">
-            ${filtered.map(callback => this._renderCallbackCard(callback))}
+            ${this.groupByQueue
+              ? [...this._getGroupedCallbacks(filtered)].map(([name, cards]) => this._renderQueueGroup(name, cards))
+              : filtered.map(callback => this._renderCallbackCard(callback))
+            }
           </div>
         `}
 
