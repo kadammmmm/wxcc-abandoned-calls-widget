@@ -940,8 +940,6 @@ class CallbackWidget extends LitElement {
           channelType
           origin
           destination
-          contactTag
-          businessOutcome
           lastQueue { id name }
         }
         pageInfo { hasNextPage endCursor }
@@ -1035,9 +1033,6 @@ class CallbackWidget extends LitElement {
         const callbackMade = apiCallbackMade || (prevRecord?.callbackMade ?? false);
         const calledBackBy = matchedEntry?.agent || prevRecord?.calledBackBy || null;
 
-        const contactTag = Array.isArray(task.contactTag)
-          ? task.contactTag.join(', ')
-          : (task.contactTag || null);
         return {
           id: task.id,
           ani: task.origin,
@@ -1047,8 +1042,6 @@ class CallbackWidget extends LitElement {
           calledBackBy,
           status: callbackMade ? 'called-back' : 'pending',
           destination: task.destination || null,
-          contactTag,
-          businessOutcome: task.businessOutcome || null,
         };
       }).sort((a, b) => new Date(a.abandonedAt) - new Date(b.abandonedAt));
 

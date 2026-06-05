@@ -164,19 +164,11 @@ Set it to a JSON array of `{ "key": "...", "label": "..." }` objects. Each entry
 | Key | Description |
 |---|---|
 | `destination` | The number the customer dialled (DNIS) |
-| `contactTag` | Tags applied to the contact |
-| `businessOutcome` | Business outcome / disposition code |
 
-**Example — show DNIS and disposition:**
+**Example — show DNIS:**
 
 ```json
-"customFields": "[{\"key\":\"destination\",\"label\":\"Called Number\"},{\"key\":\"businessOutcome\",\"label\":\"Outcome\"}]"
-```
-
-**Example — all three fields:**
-
-```json
-"customFields": "[{\"key\":\"destination\",\"label\":\"DNIS\"},{\"key\":\"contactTag\",\"label\":\"Tags\"},{\"key\":\"businessOutcome\",\"label\":\"Outcome\"}]"
+"customFields": "[{\"key\":\"destination\",\"label\":\"Called Number\"}]"
 ```
 
 **Full layout example with custom fields:**
@@ -186,13 +178,13 @@ Set it to a JSON array of `{ "key": "...", "label": "..." }` objects. Each entry
   "accessToken":   "$STORE.auth.accessToken",
   "outdialEp":     "$STORE.agent.outDialEp",
   "outdialAni":    "+61298765432",
-  "customFields":  "[{\"key\":\"destination\",\"label\":\"Called Number\"},{\"key\":\"businessOutcome\",\"label\":\"Outcome\"}]"
+  "customFields":  "[{\"key\":\"destination\",\"label\":\"Called Number\"}]"
 }
 ```
 
-Custom field values appear in a shaded section at the bottom of each card, displayed as two columns of label/value pairs.
+Custom field values appear in a shaded section at the bottom of each card. Fields with no value for a given call are hidden automatically.
 
-**Note:** `destination`, `contactTag`, and `businessOutcome` are standard WxCC task fields. Their availability depends on your WxCC configuration — if a field returns empty for all calls, it simply won't appear on any card.
+**Note:** Only fields confirmed valid in the WxCC Search API `taskDetails` schema are listed above. If you discover additional field names supported by your tenant, you can add them using the same `{ "key": "...", "label": "..." }` format.
 
 ---
 
