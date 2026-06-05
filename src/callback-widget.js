@@ -680,6 +680,10 @@ class CallbackWidget extends LitElement {
     this._pendingDialCallback = null;
     this._sdkLogger = null;
     this._pollInterval = null;
+    this._pollJitterTimeout = null;
+    this._agentStateListener = null;
+    this._consecutiveErrors = 0;
+    this._nextPollAt = 0;
     this.searchQuery = '';
     this.priorityWarningMins = 60;
     this.priorityCriticalMins = 120;
@@ -696,14 +700,17 @@ class CallbackWidget extends LitElement {
       link.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap';
       document.head.appendChild(link);
     }
-    await this._initSDK();
+    await this._initSDK(); // _initSDK calls _fetchCallbacks() itself
     this._startPolling();
-    this._fetchCallbacks(); // fetch immediately on load, don't wait for first interval
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._stopPolling();
+    if (this._agentStateListener && Desktop.agentStateInfo?.removeEventListener) {
+      Desktop.agentStateInfo.removeEventListener('updated', this._agentStateListener);
+      this._agentStateListener = null;
+    }
   }
 
   async _initSDK() {
@@ -751,12 +758,13 @@ class CallbackWidget extends LitElement {
       }
 
       if (Desktop.agentStateInfo?.addEventListener) {
-        Desktop.agentStateInfo.addEventListener('updated', (event) => {
+        this._agentStateListener = (event) => {
           if (Array.isArray(event)) {
             const stateChange = event.find(item => item.name === 'subStatus');
             if (stateChange) this.agentState = stateChange.value;
           }
-        });
+        };
+        Desktop.agentStateInfo.addEventListener('updated', this._agentStateListener);
       }
 
       await this._fetchCallbacks();
@@ -770,12 +778,22 @@ class CallbackWidget extends LitElement {
 
   _startPolling() {
     const ms = (this.pollIntervalSeconds || 30) * 1000;
-    this._pollInterval = setInterval(() => {
-      if (!this.loading) this._fetchCallbacks();
-    }, ms);
+    // Random jitter up to one full interval so agents starting at the same time
+    // don't all hit the API simultaneously.
+    const jitter = Math.floor(Math.random() * ms);
+    this._pollJitterTimeout = setTimeout(() => {
+      this._pollJitterTimeout = null;
+      this._pollInterval = setInterval(() => {
+        if (!this.loading && Date.now() >= this._nextPollAt) this._fetchCallbacks();
+      }, ms);
+    }, jitter);
   }
 
   _stopPolling() {
+    if (this._pollJitterTimeout) {
+      clearTimeout(this._pollJitterTimeout);
+      this._pollJitterTimeout = null;
+    }
     if (this._pollInterval) {
       clearInterval(this._pollInterval);
       this._pollInterval = null;
@@ -921,10 +939,16 @@ class CallbackWidget extends LitElement {
       }).sort((a, b) => new Date(a.abandonedAt) - new Date(b.abandonedAt));
 
       this.error = null;
+      this._consecutiveErrors = 0;
+      this._nextPollAt = 0;
 
     } catch (err) {
       this._log('Search API error', { error: err.message }, 'error');
       this.error = `Search API error: ${err.message}`;
+      this._consecutiveErrors++;
+      // Back off: 30s, 60s, 90s… capped at 5 minutes
+      const backoffMs = Math.min(this._consecutiveErrors * 30000, 300000);
+      this._nextPollAt = Date.now() + backoffMs;
     } finally {
       this.loading = false;
       this.requestUpdate();

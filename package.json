@@ -1,6 +1,6 @@
 {
   "name": "bs-callback-widget",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Abandoned Call Callback Widget for Webex Contact Center Agent Desktop",
   "type": "module",
   "main": "dist/callback-widget.js",
