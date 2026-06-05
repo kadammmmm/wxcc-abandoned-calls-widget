@@ -3,33 +3,32 @@ import { Desktop } from '@wxcc-desktop/sdk';
 
 /**
  * Abandoned Call Callback Widget for Webex Contact Center
- * 
- * Nav Panel version - full-width layout with expanded callback cards.
- * Surfaces abandoned calls for agent follow-up with claim/release/dial/complete workflow.
+ *
+ * Polls the WxCC Search API directly — no backend server required.
+ * Cross-references outbound calls to detect already-handled abandons.
  */
 class CallbackWidget extends LitElement {
   static properties = {
-    callbacks: { type: Array },
-    loading: { type: Boolean },
-    error: { type: String },
-    agentId: { type: String },
-    agentState: { type: String },
-    claimingId: { type: String },
-    dialingId: { type: String },
-    backendUrl: { type: String, attribute: 'backend-url' },
-    outdialEp: { type: String, attribute: 'outdial-ep' },
-    outdialAni: { type: String, attribute: 'outdial-ani' },
-    // Support for multiple ANIs - can be comma-separated string or JSON array
-    outdialAniList: { type: Array, attribute: 'outdial-ani-list' },
-    // Currently selected ANI (for multi-ANI scenarios)
-    selectedAni: { type: String },
-    // Show ANI selector modal
-    showAniSelector: { type: Boolean },
-    // Search/filter
-    searchQuery: { type: String },
-    // Priority thresholds (in minutes) - configurable via layout
-    priorityWarningMins: { type: Number, attribute: 'priority-warning-mins' },  // Yellow threshold
-    priorityCriticalMins: { type: Number, attribute: 'priority-critical-mins' } // Red threshold
+    callbacks:           { type: Array },
+    loading:             { type: Boolean },
+    error:               { type: String },
+    agentId:             { type: String },
+    agentState:          { type: String },
+    dialingId:           { type: String },
+    showCalledBack:      { type: Boolean },
+    // Layout-configurable
+    datacenter:          { type: String },                                        // us1 | eu1 | eu2 | anz1 | ca1 | jp1 | sg1
+    lookbackMinutes:     { type: Number, attribute: 'lookback-minutes' },         // default 480 (8h)
+    pollIntervalSeconds: { type: Number, attribute: 'poll-interval-seconds' },    // default 30
+    accessToken:         { type: String, attribute: 'access-token' },
+    outdialEp:           { type: String, attribute: 'outdial-ep' },
+    outdialAni:          { type: String, attribute: 'outdial-ani' },
+    outdialAniList:      { type: Array,  attribute: 'outdial-ani-list' },
+    selectedAni:         { type: String },
+    showAniSelector:     { type: Boolean },
+    searchQuery:         { type: String },
+    priorityWarningMins: { type: Number, attribute: 'priority-warning-mins' },
+    priorityCriticalMins:{ type: Number, attribute: 'priority-critical-mins' }
   };
 
   static styles = css`
@@ -239,8 +238,19 @@ class CallbackWidget extends LitElement {
       50%       { border-left-color: rgba(227,25,55,0.35); }
     }
 
-    .callback-card.claimed          { border-left-color: var(--primary-color); }
-    .callback-card.claimed-by-other { opacity: 0.6; }
+    .callback-card.called-back       { opacity: 0.55; border-left-color: var(--text-muted) !important; }
+    .card-status.called-back         { background: var(--bg-secondary); color: var(--text-muted); }
+
+    .toggle-called-back-btn {
+      font-size: 11px; padding: 3px 10px; border-radius: 10px;
+      border: 1px solid var(--border-color); background: transparent;
+      color: var(--text-muted); cursor: pointer; margin-left: auto;
+      transition: background 0.15s, color 0.15s; white-space: nowrap;
+    }
+    .toggle-called-back-btn.active {
+      background: rgba(22,163,74,0.12); color: var(--success-color);
+      border-color: var(--success-color);
+    }
 
     .card-header {
       display: flex;
@@ -639,20 +649,21 @@ class CallbackWidget extends LitElement {
     this.error = null;
     this.agentId = null;
     this.agentState = 'Unknown';
-    this.claimingId = null;
     this.dialingId = null;
-    this.backendUrl = 'https://abandoncallbacks.bswxcc.com/api';
-    this.outdialEp = null;  // Outdial Entry Point ID - passed from layout
-    this.outdialAni = null; // Single Outdial ANI - passed from layout
-    this.outdialAniList = null; // Multiple ANIs - array or comma-separated
-    this.selectedAni = null; // Currently selected ANI
-    this.showAniSelector = false; // Show ANI selection modal
-    this._pendingDialCallback = null; // Callback waiting for ANI selection
+    this.showCalledBack = false;
+    this.datacenter = null;
+    this.lookbackMinutes = 480;
+    this.pollIntervalSeconds = 30;
+    this.accessToken = null;
+    this.outdialEp = null;
+    this.outdialAni = null;
+    this.outdialAniList = null;
+    this.selectedAni = null;
+    this.showAniSelector = false;
+    this._pendingDialCallback = null;
     this._sdkLogger = null;
     this._pollInterval = null;
-    // Search/filter
     this.searchQuery = '';
-    // Priority thresholds (configurable, defaults: 60 min warning, 120 min critical)
     this.priorityWarningMins = 60;
     this.priorityCriticalMins = 120;
   }
@@ -738,11 +749,10 @@ class CallbackWidget extends LitElement {
   }
 
   _startPolling() {
+    const ms = (this.pollIntervalSeconds || 30) * 1000;
     this._pollInterval = setInterval(() => {
-      if (!this.loading) {
-        this._fetchCallbacks();
-      }
-    }, 30000);
+      if (!this.loading) this._fetchCallbacks();
+    }, ms);
   }
 
   _stopPolling() {
@@ -764,95 +774,158 @@ class CallbackWidget extends LitElement {
 
   async _fetchCallbacks() {
     this.loading = true;
+    this.requestUpdate();
 
-    try {
-      const response = await fetch(`${this.backendUrl}/callbacks`, {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Agent-Id': this.agentId || ''
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
-      this.callbacks = data.callbacks || [];
-      this._log('Fetched callbacks', { count: this.callbacks.length });
-
-    } catch (err) {
-      this._log('Fetch failed', { error: err.message }, 'error');
-      this.error = 'Unable to load callbacks';
-    } finally {
+    const token = this._getToken();
+    if (!token) {
+      this.error = 'No access token. Set accessToken in the desktop layout or ensure the Desktop SDK is initialized.';
       this.loading = false;
-    }
-  }
-
-  async _claimCallback(callback) {
-    if (!this.agentId) {
-      this.error = 'Agent ID not available';
+      this.requestUpdate();
       return;
     }
 
-    this.claimingId = callback.id;
+    const datacenter = this.datacenter || this._getDatacenter();
+    const endpoint = `https://api.wxcc-${datacenter}.cisco.com/search`;
+    const now = Date.now();
+    const from = now - ((this.lookbackMinutes || 480) * 60 * 1000);
+
+    const abandonedQuery = `{
+      taskDetails(
+        from: ${from}
+        to: ${now}
+        timeComparator: endedTime
+        filter: {
+          and: [
+            { terminationType: { equals: "abandoned" } }
+            { direction: { equals: "inbound" } }
+            { channelType: { equals: "telephony" } }
+          ]
+        }
+        pagination: { cursor: "0", id: "0" }
+      ) {
+        tasks { id ani dnis queueName terminationType direction queuedTime endedTime }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`;
+
+    const outboundQuery = `{
+      taskDetails(
+        from: ${from}
+        to: ${now}
+        timeComparator: queuedTime
+        filter: {
+          and: [
+            { direction: { equals: "outdial" } }
+            { channelType: { equals: "telephony" } }
+          ]
+        }
+        pagination: { cursor: "0", id: "0" }
+      ) {
+        tasks { id ani dnis direction originatedTime queuedTime }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`;
 
     try {
-      const response = await fetch(`${this.backendUrl}/callbacks/${callback.id}/claim`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          agentId: this.agentId,
-          claimedAt: new Date().toISOString()
-        })
-      });
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      };
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || 'Claim failed');
+      const [abandonedRes, outboundRes] = await Promise.all([
+        fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ query: abandonedQuery }) }),
+        fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ query: outboundQuery }) })
+      ]);
+
+      if (!abandonedRes.ok) {
+        const errText = await abandonedRes.text().catch(() => '');
+        throw new Error(`Search API ${abandonedRes.status}${errText ? ': ' + errText.slice(0, 120) : ''}`);
       }
 
-      this._log('Claimed callback', { callbackId: callback.id });
-      await this._fetchCallbacks();
+      const abandonedData = await abandonedRes.json();
+      const outboundData = outboundRes.ok ? await outboundRes.json() : null;
+
+      if (abandonedData.errors?.length) {
+        throw new Error(abandonedData.errors[0]?.message || 'GraphQL query error');
+      }
+
+      const abandonedTasks = abandonedData?.data?.taskDetails?.tasks || [];
+      const outboundTasks = outboundData?.data?.taskDetails?.tasks || [];
+
+      this._log('Search API polled', { abandoned: abandonedTasks.length, outbound: outboundTasks.length });
+
+      // Build map: normalized ANI -> array of outbound call start times
+      // For outdial tasks the destination may appear in ani or dnis depending on WxCC version
+      const outboundTimesByAni = new Map();
+      for (const task of outboundTasks) {
+        const callTime = task.originatedTime || task.queuedTime || 0;
+        for (const field of [task.ani, task.dnis]) {
+          const key = this._normalizeAni(field);
+          if (!key) continue;
+          const times = outboundTimesByAni.get(key) || [];
+          times.push(callTime);
+          outboundTimesByAni.set(key, times);
+        }
+      }
+
+      const prev = this.callbacks;
+
+      this.callbacks = abandonedTasks.map(task => {
+        const key = this._normalizeAni(task.ani);
+        const abandonEndTime = task.endedTime || task.queuedTime || 0;
+        const outTimes = outboundTimesByAni.get(key) || [];
+        const apiCallbackMade = outTimes.some(t => t > abandonEndTime);
+        // Preserve optimistic callbackMade set when agent clicked Dial (Search API lags ~1-2 min)
+        const prevRecord = prev.find(c => c.id === task.id);
+        const callbackMade = apiCallbackMade || (prevRecord?.callbackMade ?? false);
+
+        return {
+          id: task.id,
+          ani: task.ani,
+          queue: task.queueName || 'Unknown Queue',
+          abandonedAt: new Date(task.endedTime || task.queuedTime).toISOString(),
+          callbackMade,
+          status: callbackMade ? 'called-back' : 'pending'
+        };
+      }).sort((a, b) => new Date(a.abandonedAt) - new Date(b.abandonedAt));
+
+      this.error = null;
 
     } catch (err) {
-      this._log('Claim failed', { error: err.message }, 'error');
-      this.error = err.message;
+      this._log('Search API error', { error: err.message }, 'error');
+      this.error = `Search API error: ${err.message}`;
     } finally {
-      this.claimingId = null;
+      this.loading = false;
+      this.requestUpdate();
     }
   }
 
-  async _releaseCallback(callback) {
+  _getToken() {
     try {
-      const response = await fetch(`${this.backendUrl}/callbacks/${callback.id}/release`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentId: this.agentId })
-      });
+      const sdkToken = window.myAgentService?.webex?.token?.access_token;
+      if (sdkToken) return sdkToken;
+      const storeToken = Desktop.agentContact?.SERVICE?.webex?.token?.access_token;
+      if (storeToken) return storeToken;
+    } catch (e) { /* SDK not ready */ }
+    return this.accessToken || null;
+  }
 
-      if (!response.ok) {
-        throw new Error('Release failed');
-      }
-
-      this._log('Released callback', { callbackId: callback.id });
-      await this._fetchCallbacks();
-
-    } catch (err) {
-      this._log('Release failed', { error: err.message }, 'error');
-      this.error = err.message;
-    }
+  _normalizeAni(ani) {
+    if (!ani || typeof ani !== 'string') return null;
+    const digits = ani.replace(/\D/g, '');
+    return digits.length >= 7 ? digits : null;
   }
 
   async _dialCallback(callback) {
     this.dialingId = callback.id;
+    this.requestUpdate();
 
     try {
-      const token = window.myAgentService?.webex?.token?.access_token || this.accessToken;
+      const token = this._getToken();
       if (!token) throw new Error('No access token available for outdial');
 
       const entryPointId = this.outdialEp || callback.entryPointId;
-      if (!entryPointId) throw new Error('No Outdial Entry Point configured. Please set outdialEp in the desktop layout.');
+      if (!entryPointId) throw new Error('No Outdial Entry Point configured. Set outdialEp in the desktop layout.');
 
       const availableAnis = this._getAvailableAnis();
       if (availableAnis.length === 0) throw new Error('No Outdial ANI configured. Set outdialAni or outdialAniList in the desktop layout.');
@@ -873,6 +946,7 @@ class CallbackWidget extends LitElement {
       console.error('[CallbackWidget] Dial error:', err);
       this.error = err.message;
       this.dialingId = null;
+      this.requestUpdate();
     }
   }
 
@@ -982,16 +1056,11 @@ class CallbackWidget extends LitElement {
 
       this._log('Outdial initiated', { callbackId: callback.id, ani: callback.ani });
 
-      const completeRes = await fetch(`${this.backendUrl}/callbacks/${callback.id}/complete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentId: this.agentId, completedAt: new Date().toISOString() })
-      });
-      if (!completeRes.ok) {
-        this._log('Complete call failed', { callbackId: callback.id, status: completeRes.status }, 'error');
-      }
-
-      this.callbacks = this.callbacks.filter(c => c.id !== callback.id);
+      // Optimistically mark as called back; confirmed on next Search API poll (~1-2 min lag)
+      this.callbacks = this.callbacks.map(c =>
+        c.id === callback.id ? { ...c, callbackMade: true, status: 'called-back' } : c
+      );
+      this.selectedAni = null;
 
     } catch (err) {
       console.error('[CallbackWidget] Dial error:', err);
@@ -1000,6 +1069,7 @@ class CallbackWidget extends LitElement {
       this.error = 'Dial failed: ' + errorMsg;
     } finally {
       this.dialingId = null;
+      this.requestUpdate();
     }
   }
 
@@ -1038,31 +1108,17 @@ class CallbackWidget extends LitElement {
   }
 
   _getFilteredCallbacks() {
-    if (!this.searchQuery || this.searchQuery.trim() === '') {
-      return this.callbacks;
-    }
+    let results = this.showCalledBack
+      ? this.callbacks
+      : this.callbacks.filter(c => !c.callbackMade);
 
-    const query = this.searchQuery.toLowerCase().trim();
-    return this.callbacks.filter(callback => {
-      const ani = (callback.ani || '').toLowerCase();
-      const queue = (callback.queue || '').toLowerCase();
-      const callerName = (callback.callerName || '').toLowerCase();
-      const context = (callback.context || '').toLowerCase();
-      
-      // Also search custom fields values
-      let customFieldsMatch = false;
-      if (callback.customFields) {
-        customFieldsMatch = Object.values(callback.customFields).some(value => 
-          String(value).toLowerCase().includes(query)
-        );
-      }
-      
-      return ani.includes(query) || 
-             queue.includes(query) || 
-             callerName.includes(query) ||
-             context.includes(query) ||
-             customFieldsMatch;
-    });
+    if (!this.searchQuery || !this.searchQuery.trim()) return results;
+
+    const q = this.searchQuery.toLowerCase().trim();
+    return results.filter(c =>
+      (c.ani  || '').toLowerCase().includes(q) ||
+      (c.queue|| '').toLowerCase().includes(q)
+    );
   }
 
   _getWaitTimeMinutes(abandonedAt) {
@@ -1122,23 +1178,30 @@ class CallbackWidget extends LitElement {
   }
 
   _getStats() {
+    const uncalled = this.callbacks.filter(c => !c.callbackMade);
     return {
-      pending: this.callbacks.filter(c => !c.claimedBy).length,
-      claimed: this.callbacks.filter(c => c.claimedBy).length
+      pending:   uncalled.length,
+      calledBack: this.callbacks.length - uncalled.length
     };
+  }
+
+  _toggleShowCalledBack() {
+    this.showCalledBack = !this.showCalledBack;
   }
 
   render() {
     const stats = this._getStats();
-    
-    const criticalCount = this.callbacks.filter(c => !c.claimedBy && this._getPriorityLevel(c.abandonedAt) === 'critical').length;
-    const warningCount = this.callbacks.filter(c => !c.claimedBy && this._getPriorityLevel(c.abandonedAt) === 'warning').length;
+    const filtered = this._getFilteredCallbacks();
+    const uncalled = this.callbacks.filter(c => !c.callbackMade);
+    const criticalCount = uncalled.filter(c => this._getPriorityLevel(c.abandonedAt) === 'critical').length;
+    const warningCount  = uncalled.filter(c => this._getPriorityLevel(c.abandonedAt) === 'warning').length;
+    const allHandled = this.callbacks.length > 0 && stats.pending === 0 && !this.searchQuery;
 
     return html`
       <div class="panel-container">
         <div class="panel-header">
           <div class="header-left">
-            <div class="header-title">CallBack Queue</div>
+            <div class="header-title">Abandoned Calls</div>
           </div>
           <div class="header-right">
             <div class="live-indicator">
@@ -1150,11 +1213,13 @@ class CallbackWidget extends LitElement {
 
         <div class="stats-bar">
           <span class="stat-pill pending">
-            Pending <span class="stat-pill-count">${stats.pending}</span>
+            Uncalled <span class="stat-pill-count">${stats.pending}</span>
           </span>
-          <span class="stat-pill claimed">
-            Claimed <span class="stat-pill-count">${stats.claimed}</span>
-          </span>
+          ${stats.calledBack > 0 ? html`
+            <span class="stat-pill neutral">
+              Handled <span class="stat-pill-count">${stats.calledBack}</span>
+            </span>
+          ` : ''}
           ${warningCount > 0 ? html`
             <span class="stat-pill warning">
               Warning <span class="stat-pill-count">${warningCount}</span>
@@ -1164,6 +1229,12 @@ class CallbackWidget extends LitElement {
             <span class="stat-pill critical">
               Critical <span class="stat-pill-count">${criticalCount}</span>
             </span>
+          ` : ''}
+          ${stats.calledBack > 0 ? html`
+            <button
+              class="toggle-called-back-btn ${this.showCalledBack ? 'active' : ''}"
+              @click=${this._toggleShowCalledBack}
+            >${this.showCalledBack ? 'Hide Handled' : 'Show Handled'}</button>
           ` : ''}
         </div>
 
@@ -1191,10 +1262,10 @@ class CallbackWidget extends LitElement {
                 <circle cx="11" cy="11" r="8"/>
                 <path d="M21 21l-4.35-4.35"/>
               </svg>
-              <input 
-                type="text" 
-                class="search-input" 
-                placeholder="Search by phone, queue, or caller name..."
+              <input
+                type="text"
+                class="search-input"
+                placeholder="Search by phone or queue..."
                 .value=${this.searchQuery}
                 @input=${this._handleSearch}
               />
@@ -1216,20 +1287,32 @@ class CallbackWidget extends LitElement {
               <rect x="3" y="4" width="18" height="16" rx="2"/>
               <path d="M3 10h18"/>
             </svg>
-            <div class="empty-title">No calls in queue</div>
-            <div class="empty-text">Calls will appear here automatically when customers abandon while waiting.</div>
+            <div class="empty-title">No abandoned calls</div>
+            <div class="empty-text">No abandoned calls found in the last ${this.lookbackMinutes || 480} minutes.</div>
           </div>
-        ` : this._getFilteredCallbacks().length === 0 ? html`
+        ` : allHandled ? html`
+          <div class="empty-state">
+            <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+            <div class="empty-title">All caught up!</div>
+            <div class="empty-text">All abandoned calls have been handled.</div>
+            <button
+              style="margin-top:12px; font-size:12px; padding:6px 14px; border-radius:8px; border:1px solid var(--border-color); background:transparent; color:var(--text-muted); cursor:pointer;"
+              @click=${this._toggleShowCalledBack}
+            >Show handled calls</button>
+          </div>
+        ` : filtered.length === 0 ? html`
           <div class="no-results">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <circle cx="11" cy="11" r="8"/>
               <path d="M21 21l-4.35-4.35"/>
             </svg>
-            <div>No callbacks match "${this.searchQuery}"</div>
+            <div>No results for "${this.searchQuery}"</div>
           </div>
         ` : html`
           <div class="callback-list">
-            ${this._getFilteredCallbacks().map(callback => this._renderCallbackCard(callback))}
+            ${filtered.map(callback => this._renderCallbackCard(callback))}
           </div>
         `}
 
@@ -1243,7 +1326,7 @@ class CallbackWidget extends LitElement {
             </svg>
             ${this.loading ? 'Refreshing...' : 'Just now'}
           </div>
-          <div>v1.0.0</div>
+          <div>v2.0.0</div>
         </div>
       </div>
     `;
@@ -1291,20 +1374,12 @@ class CallbackWidget extends LitElement {
   }
 
   _renderCallbackCard(callback) {
-    const isClaimedByMe = callback.claimedBy === this.agentId;
-    const isClaimedByOther = callback.claimedBy && !isClaimedByMe;
-    const isClaiming = this.claimingId === callback.id;
     const isDialing = this.dialingId === callback.id;
-    
-    const priorityLevel = this._getPriorityLevel(callback.abandonedAt);
+    const priorityLevel = callback.callbackMade ? 'normal' : this._getPriorityLevel(callback.abandonedAt);
     const waitTime = this._formatWaitTime(callback.abandonedAt);
 
-    const statusClass = isClaimedByMe ? 'claimed' : (isClaimedByOther ? 'claimed-by-other' : '');
-    const statusLabel = isClaimedByMe ? 'Claimed' : (isClaimedByOther ? 'Unavailable' : 'Pending');
-    const statusBadgeClass = isClaimedByMe ? 'claimed' : (isClaimedByOther ? 'other' : 'pending');
-
     return html`
-      <div class="callback-card ${statusClass} priority-${priorityLevel}">
+      <div class="callback-card ${callback.callbackMade ? 'called-back' : ''} priority-${priorityLevel}">
         <div class="card-header">
           <div class="caller-info">
             <div class="caller-avatar">
@@ -1316,7 +1391,7 @@ class CallbackWidget extends LitElement {
             <div class="caller-details">
               <div class="caller-ani">
                 ${this._formatANI(callback.ani)}
-                <span class="wait-time ${priorityLevel}">${waitTime}</span>
+                ${!callback.callbackMade ? html`<span class="wait-time ${priorityLevel}">${waitTime}</span>` : ''}
               </div>
               <div class="caller-meta">
                 <span class="meta-tag queue">
@@ -1325,7 +1400,7 @@ class CallbackWidget extends LitElement {
                     <circle cx="9" cy="7" r="4"/>
                     <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
                   </svg>
-                  ${callback.queue || 'Unknown Queue'}
+                  ${callback.queue}
                 </span>
                 <span class="meta-tag time">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1337,52 +1412,21 @@ class CallbackWidget extends LitElement {
               </div>
             </div>
           </div>
-          <span class="card-status ${statusBadgeClass}">${statusLabel}</span>
+          <span class="card-status ${callback.callbackMade ? 'called-back' : 'pending'}">
+            ${callback.callbackMade ? 'Called Back' : 'Pending'}
+          </span>
         </div>
 
-        ${callback.context ? html`
-          <div class="card-context">
-            <div class="card-context-label">Context</div>
-            ${callback.context}
-          </div>
-        ` : ''}
-
-        ${callback.callerName ? html`
-          <div class="card-context">
-            <div class="card-context-label">Caller</div>
-            ${callback.callerName}
-          </div>
-        ` : ''}
-
-        ${callback.customFields && Object.keys(callback.customFields).length > 0 ? html`
-          <div class="custom-fields">
-            ${Object.entries(callback.customFields).map(([label, value]) => html`
-              <div class="custom-field">
-                <span class="custom-field-label">${label}</span>
-                <span class="custom-field-value">${value}</span>
-              </div>
-            `)}
-          </div>
-        ` : ''}
-
         <div class="card-actions">
-          ${!callback.claimedBy ? html`
-            <button 
-              class="action-btn primary"
-              @click=${() => this._claimCallback(callback)}
-              ?disabled=${isClaiming}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                <circle cx="8.5" cy="7" r="4"/>
-                <polyline points="17 11 19 13 23 9"/>
+          ${callback.callbackMade ? html`
+            <span style="color:var(--text-muted);font-size:12px;display:flex;align-items:center;gap:6px;">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"/>
               </svg>
-              ${isClaiming ? 'Claiming...' : 'Claim'}
-            </button>
-          ` : ''}
-
-          ${isClaimedByMe ? html`
-            <button 
+              Outbound call placed
+            </span>
+          ` : html`
+            <button
               class="action-btn success"
               @click=${() => this._dialCallback(callback)}
               ?disabled=${isDialing}
@@ -1392,20 +1436,7 @@ class CallbackWidget extends LitElement {
               </svg>
               ${isDialing ? 'Dialing...' : 'Dial'}
             </button>
-            <div class="action-spacer"></div>
-            <button 
-              class="action-btn danger"
-              @click=${() => this._releaseCallback(callback)}
-            >
-              Release
-            </button>
-          ` : ''}
-
-          ${isClaimedByOther ? html`
-            <span style="color: var(--text-muted); font-size: 12px;">
-              Claimed by another agent
-            </span>
-          ` : ''}
+          `}
         </div>
       </div>
     `;
